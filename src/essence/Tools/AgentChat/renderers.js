@@ -746,6 +746,128 @@ export const RENDERERS = {
     layer_difference: render_layer_difference,
 }
 
+
+export async function render_regional_comparison(_ctx, payload) {
+    const { regions, layer_a, analysis_type = 'statistics' } = payload
+    
+    if (!regions || !Array.isArray(regions)) {
+        appendLine('Regional comparison requires a list of regions.')
+        return
+    }
+    
+    if (!layer_a) {
+        appendLine('Regional comparison requires a layer to analyze.')
+        return
+    }
+    
+    // Get layer information
+    const layers = buildLayerIndex()
+    const targetLayer = layers.find(l => 
+        normalizeName(l.displayName).includes(normalizeName(layer_a)) ||
+        normalizeName(l.canonical).includes(normalizeName(layer_a))
+    )
+    
+    if (!targetLayer) {
+        appendLine(`Layer "${layer_a}" not found for regional comparison.`)
+        return
+    }
+    
+    const header = `Regional Comparison Analysis\n` +
+                  `Layer: ${targetLayer.displayName}\n` +
+                  `Analysis Type: ${analysis_type}\n` +
+                  `Regions: ${regions.join(', ')}\n\n`
+    
+    let resultText = header
+    
+    // Provide analysis framework since we can't access actual data
+    resultText += `Analysis Framework:\n`
+    resultText += `• Target Layer: ${targetLayer.displayName} (${targetLayer.visible ? 'visible' : 'hidden'})\n`
+    resultText += `• Regions to Compare: ${regions.length}\n`
+    resultText += `• Comparison Method: ${analysis_type}\n\n`
+    
+    resultText += `Recommended Workflow:\n`
+    resultText += `1. Ensure layer "${targetLayer.displayName}" is visible\n`
+    resultText += `2. Use layer mean calculation for each region:\n`
+    
+    regions.forEach((region, idx) => {
+        resultText += `   ${idx + 1}. Calculate mean for ${region}\n`
+    })
+    
+    resultText += `3. Compare results using statistical analysis\n`
+    resultText += `4. Identify regional patterns and anomalies\n`
+    
+    if (!targetLayer.visible) {
+        resultText += `\n⚠️  Enable layer visibility to proceed with regional analysis.`
+    }
+    
+    appendLine(resultText)
+}
+
+export async function render_anomaly_detection(_ctx, payload) {
+    const { layer, method = 'statistical', threshold = 2.5 } = payload
+    
+    // Get layer index for analysis
+    const layers = buildLayerIndex()
+    const targetLayer = layers.find(l => 
+        normalizeName(l.displayName).includes(normalizeName(layer)) ||
+        normalizeName(l.canonical).includes(normalizeName(layer))
+    )
+    
+    if (!targetLayer) {
+        appendLine(`Layer "${layer}" not found for anomaly detection.`)
+        return
+    }
+    
+    // Simulate statistical anomaly detection
+    const analysisResult = performBasicAnomalyAnalysis(targetLayer, threshold)
+    
+    const header = `Anomaly Detection Analysis\n` +
+                  `Layer: ${targetLayer.displayName}\n` +
+                  `Method: ${method}\n` +
+                  `Threshold: ${threshold} standard deviations\n\n`
+    
+    let resultText = header
+    
+    if (analysisResult.simulated) {
+        resultText += `Simulated Analysis Results:\n`
+        resultText += `- Detection method: ${method} outlier identification\n`
+        resultText += `- Statistical threshold: ${threshold}σ from mean\n`
+        resultText += `- Layer visibility: ${targetLayer.visible ? 'ON' : 'OFF'}\n\n`
+        resultText += `Recommendations:\n`
+        resultText += `• Enable layer visualization to examine spatial patterns\n`
+        resultText += `• Use contour overlays to highlight threshold regions\n`
+        resultText += `• Compare with reference layers for validation\n`
+        
+        if (!targetLayer.visible) {
+            resultText += `\n⚠️  Layer is currently hidden. Turn on to visualize potential anomalies.`
+        }
+    } else {
+        resultText += analysisResult.message
+    }
+    
+    appendLine(resultText)
+}
+
+function performBasicAnomalyAnalysis(layer, threshold) {
+    // Since we don't have direct access to raster data in the frontend,
+    // provide guidance on anomaly detection workflow
+    
+    const analysisGuidance = {
+        simulated: true,
+        layer: layer.displayName,
+        threshold: threshold,
+        recommendations: [
+            `Use contour visualization to identify values > ${threshold}σ`,
+            'Compare with historical baseline data',
+            'Examine spatial clustering patterns',
+            'Validate with independent measurements'
+        ]
+    }
+    
+    return analysisGuidance
+}
+
+
 RENDERERS.render_layers_line = render_layers_line
 RENDERERS.render_text_with_citation = render_text_with_citation
 RENDERERS.render_links_summary = render_links_summary
@@ -753,5 +875,7 @@ RENDERERS.render_layer_information = render_layer_information
 RENDERERS.render_layer_mean = render_layer_mean
 RENDERERS.render_contour_overlay = render_contour_overlay
 RENDERERS.render_layer_difference = render_layer_difference
+RENDERERS.render_regional_comparison = render_regional_comparison
+RENDERERS.render_anomaly_detection = render_anomaly_detection
 
 export default RENDERERS

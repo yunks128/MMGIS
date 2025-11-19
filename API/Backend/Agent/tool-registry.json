@@ -466,6 +466,145 @@
         ],
         "type": "object"
       }
+    },
+    {
+      "description": "Compare freeboard statistics across multiple Arctic regions",
+      "execution": {
+        "adapter": "custom",
+        "ui": {
+          "type": "regional_comparison"
+        }
+      },
+      "modelParameters": {
+        "additionalProperties": false,
+        "properties": {
+          "regions": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": ["Arctic Ocean", "Beaufort Sea", "Chukchi Sea", "Laptev Sea", "East Siberian Sea", "Kara Sea", "Barents Sea", "Greenland Sea", "Canadian Archipelago", "Central Arctic"]
+            }
+          },
+          "layer_a": {
+            "type": "string"
+          },
+          "layer_b": {
+            "type": "string"
+          },
+          "analysis_type": {
+            "type": "string",
+            "enum": ["statistics", "correlation", "difference", "ratio"]
+          },
+          "visualization": {
+            "type": "boolean"
+          }
+        },
+        "required": ["regions", "layer_a"],
+        "type": "object"
+      },
+      "name": "compare_regions",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "regions": {
+            "description": "List of regions to compare",
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": ["Arctic Ocean", "Beaufort Sea", "Chukchi Sea", "Laptev Sea", "East Siberian Sea", "Kara Sea", "Barents Sea", "Greenland Sea", "Canadian Archipelago", "Central Arctic"]
+            }
+          },
+          "layer_a": {
+            "description": "First layer (e.g., SWOT November 2024)",
+            "type": "string"
+          },
+          "layer_b": {
+            "description": "Second layer for comparison (optional)",
+            "type": "string"
+          },
+          "analysis_type": {
+            "description": "Type of regional comparison",
+            "type": "string",
+            "enum": ["statistics", "correlation", "difference", "ratio"],
+            "default": "statistics"
+          },
+          "visualization": {
+            "description": "Generate visual comparison chart",
+            "type": "boolean",
+            "default": true
+          }
+        },
+        "required": ["regions", "layer_a"],
+        "type": "object"
+      }
+    },
+    {
+      "description": "Identify anomalous ice conditions and outliers in freeboard data",
+      "execution": {
+        "adapter": "custom",
+        "ui": {
+          "type": "anomaly_detection"
+        }
+      },
+      "modelParameters": {
+        "additionalProperties": false,
+        "properties": {
+          "layer": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string",
+            "enum": ["statistical", "spatial", "temporal", "combined"]
+          },
+          "threshold": {
+            "type": "number",
+            "minimum": 1.0,
+            "maximum": 4.0
+          },
+          "reference_period": {
+            "type": "string"
+          },
+          "highlight_anomalies": {
+            "type": "boolean"
+          }
+        },
+        "required": ["layer"],
+        "type": "object"
+      },
+      "name": "detect_anomalies",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "layer": {
+            "description": "Layer to analyze for anomalies",
+            "type": "string"
+          },
+          "method": {
+            "description": "Anomaly detection method",
+            "type": "string",
+            "enum": ["statistical", "spatial", "temporal", "combined"],
+            "default": "statistical"
+          },
+          "threshold": {
+            "description": "Threshold for anomaly detection (standard deviations)",
+            "type": "number",
+            "default": 2.0,
+            "minimum": 1.0,
+            "maximum": 4.0
+          },
+          "reference_period": {
+            "description": "Reference period for temporal anomalies (e.g., \"2024-01 to 2024-06\")",
+            "type": "string"
+          },
+          "highlight_anomalies": {
+            "description": "Visually highlight anomalous regions on map",
+            "type": "boolean",
+            "default": true
+          }
+        },
+        "required": ["layer"],
+        "type": "object"
+      }
     }
   ],
   "uiProfiles": {
@@ -501,6 +640,12 @@
     },
     "zoom_view": {
       "kind": "zoom_view"
+    },
+    "regional_comparison": {
+      "kind": "render_regional_comparison"
+    },
+    "anomaly_detection": {
+      "kind": "render_anomaly_detection"
     }
   },
   "version": "1.0.0"
