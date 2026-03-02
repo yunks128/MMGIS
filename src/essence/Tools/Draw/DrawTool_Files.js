@@ -1,5 +1,4 @@
 import $ from 'jquery'
-import * as d3 from 'd3'
 import F_ from '../../Basics/Formulae_/Formulae_'
 import L_ from '../../Basics/Layers_/Layers_'
 import LayerGeologic from '../../Basics/Layers_/LayerGeologic/LayerGeologic'
@@ -29,6 +28,11 @@ var Files = {
         DrawTool.removePopupsFromLayer = Files.removePopupsFromLayer
         DrawTool.refreshNoteEvents = Files.refreshNoteEvents
         DrawTool.refreshMasterCheckbox = Files.refreshMasterCheckbox
+        DrawTool.hideAssociatedPoints = Files.hideAssociatedPoints
+        DrawTool.showAssociatedPoints = Files.showAssociatedPoints
+        DrawTool.removeAssociatedPoints = Files.removeAssociatedPoints
+        DrawTool.renderAssociatedPoints = Files.renderAssociatedPoints
+        DrawTool.Files = Files // Expose Files object for access from DrawTool
     },
     currentOpenFolderName: null,
     prevFilterString: '',
@@ -392,13 +396,13 @@ var Files = {
                 "</div>",
                 ].join('\n');
             if (file.is_master && !efoldersOnly) {
-                d3.select('#drawToolDrawFilesListMaster')
-                    .append('li')
+                const masterLi = $('<li>')
                     .attr('class', `drawToolDrawFilesListElem${checkState}`)
                     .attr('file_id', file.id)
                     .attr('file_name', file.file_name)
                     .attr('file_owner', file.file_owner)
                     .html(markup)
+                $('#drawToolDrawFilesListMaster').append(masterLi)
 
                 var lastMasterName = $(
                     '#drawToolDrawFilesListMaster li:last-child .drawToolFileName'
@@ -417,40 +421,37 @@ var Files = {
                     file._tagFolders[groupingType].forEach((g) => {
                         const gEnc = encodeURIComponent(g)
 
-                        const group = d3.select(
+                        const group = $(
                             `#drawToolDrawFilesList > .drawToolDrawFilesGroupElem[group_name="${gEnc}"]`
                         )
 
                         let iconClass =
                             Files.getGroupingIcons(groupingType).closed
-                        if (group.size() === 0) {
+                        if (group.length === 0) {
                             // prettier-ignore
-                            d3.select('#drawToolDrawFilesList')
-                            .append('div')
-                            .attr('class', `drawToolDrawFilesGroupElem`)
-                            .attr('group_name', gEnc)
-                            .html(
-                                [
-                                    `<div class='drawToolDrawFilesGroupElemHead' state='off' group_name='${gEnc}' groupingtype='${groupingType}'>`,
-                                        `<div class='${g === 'unassigned' || g === 'untagged' ? 'drawToolDrawFilesGroupElemUn' : ''}'>`,
-                                            `<div class='drawToolDrawFilesGroupElemChevron'><i class='mdi ${iconClass} mdi-18px'></i></div>`,
-                                            `<div>${groupingType === 'alphabetical' ? g.substring(1) : g}</div>`,
+                            const groupElem = $('<div>')
+                                .attr('class', `drawToolDrawFilesGroupElem`)
+                                .attr('group_name', gEnc)
+                                .html(
+                                    [
+                                        `<div class='drawToolDrawFilesGroupElemHead' state='off' group_name='${gEnc}' groupingtype='${groupingType}'>`,
+                                            `<div class='${g === 'unassigned' || g === 'untagged' ? 'drawToolDrawFilesGroupElemUn' : ''}'>`,
+                                                `<div class='drawToolDrawFilesGroupElemChevron'><i class='mdi ${iconClass} mdi-18px'></i></div>`,
+                                                `<div>${groupingType === 'alphabetical' ? g.substring(1) : g}</div>`,
+                                            `</div>`,
+                                            `<div class='drawToolDrawFilesGroupElemCount' count='0'></div>`,
                                         `</div>`,
-                                        `<div class='drawToolDrawFilesGroupElemCount' count='0'></div>`,
-                                    `</div>`,
-                                    '<div class="drawToolDrawFilesGroupListElem" style="display: none;"></div>',
-                                ].join('\n')
-                            )
+                                        '<div class="drawToolDrawFilesGroupListElem" style="display: none;"></div>',
+                                    ].join('\n')
+                                )
+                            $('#drawToolDrawFilesList').append(groupElem)
                         }
                         if (
                             $(
                                 `.drawToolDrawFilesGroupElem[group_name="${gEnc}"] .drawToolDrawFilesGroupListElem > .drawToolDrawFilesListElem[file_id="${file.id}"]`
                             ).length === 0
                         ) {
-                            d3.select(
-                                `.drawToolDrawFilesGroupElem[group_name="${gEnc}"] .drawToolDrawFilesGroupListElem`
-                            )
-                                .append('li')
+                            const groupLi = $('<li>')
                                 .attr(
                                     'class',
                                     `drawToolDrawFilesListElem${checkState}`
@@ -459,16 +460,17 @@ var Files = {
                                 .attr('file_name', file.file_name)
                                 .attr('file_owner', file.file_owner)
                                 .html(markup)
+                            $(`.drawToolDrawFilesGroupElem[group_name="${gEnc}"] .drawToolDrawFilesGroupListElem`).append(groupLi)
                         }
                     })
                 } else if (!efoldersOnly) {
-                    d3.select(`#drawToolDrawFilesList`)
-                        .append('li')
+                    const ungroupedLi = $('<li>')
                         .attr('class', `drawToolDrawFilesListElem${checkState}`)
                         .attr('file_id', file.id)
                         .attr('file_name', file.file_name)
                         .attr('file_owner', file.file_owner)
                         .html(markup)
+                    $('#drawToolDrawFilesList').append(ungroupedLi)
                 }
             }
         }
@@ -1609,6 +1611,9 @@ var Files = {
             if (!l) return
             for (var i = 0; i < l.length; i++) {
                 if (l[i] != null && l[i].temporallyHidden != true) {
+                    // Skip associated points - they shouldn't be highlighted on file hover
+                    if (l[i]._isAssociatedPoint === true) continue
+
                     if (typeof l[i].setStyle === 'function')
                         l[i].setStyle({ color: '#7fff00' })
                     else if (l[i].hasOwnProperty('_layers')) {
@@ -1636,6 +1641,9 @@ var Files = {
             for (var i = 0; i < l.length; i++) {
                 var style
                 if (l[i] != null) {
+                    // Skip associated points - they don't have feature.properties.style
+                    if (l[i]._isAssociatedPoint === true) continue
+
                     if (
                         !l[i].hasOwnProperty('feature') &&
                         l[i].hasOwnProperty('_layers')
@@ -1779,6 +1787,134 @@ var Files = {
             $(`.drawToolFileSelector[file_id=${activeFileId}]`).first().click()
         }
     },
+    /**
+     * Remove associated point markers for a specific feature
+     * @param {number} featureId - ID of the feature whose points should be removed
+     * @param {string} layerId - Layer ID (e.g., 'DrawTool_123')
+     */
+    removeAssociatedPoints: function (featureId, layerId) {
+        if (!layerId || !L_.layers.layer[layerId]) return
+
+        const layer = L_.layers.layer[layerId]
+        // Filter out and remove associated points for this feature
+        for (let i = layer.length - 1; i >= 0; i--) {
+            const item = layer[i]
+            if (item && item._isAssociatedPoint === true && item._parentFeatureId === featureId) {
+                // Remove from map
+                Map_.rmNotNull(item)
+                // Remove from layer array
+                layer.splice(i, 1)
+            }
+        }
+    },
+    /**
+     * Hide associated point markers for a specific feature (during editing)
+     * @param {number} featureId - ID of the feature whose points should be hidden
+     * @param {string} layerId - Layer ID (e.g., 'DrawTool_123')
+     */
+    hideAssociatedPoints: function (featureId, layerId) {
+        if (!layerId || !L_.layers.layer[layerId]) return
+
+        const layer = L_.layers.layer[layerId]
+        for (let i = 0; i < layer.length; i++) {
+            const item = layer[i]
+            if (item && item._isAssociatedPoint === true && item._parentFeatureId === featureId) {
+                // Hide the marker by removing it from map (but keep in layer array)
+                if (Map_.map.hasLayer(item)) {
+                    Map_.map.removeLayer(item)
+                    item._wasHidden = true
+                }
+            }
+        }
+    },
+    /**
+     * Show associated point markers for a specific feature (after editing)
+     * @param {number} featureId - ID of the feature whose points should be shown
+     * @param {string} layerId - Layer ID (e.g., 'DrawTool_123')
+     */
+    showAssociatedPoints: function (featureId, layerId) {
+        if (!layerId || !L_.layers.layer[layerId]) return
+
+        const layer = L_.layers.layer[layerId]
+        for (let i = 0; i < layer.length; i++) {
+            const item = layer[i]
+            if (item && item._isAssociatedPoint === true && item._parentFeatureId === featureId && item._wasHidden) {
+                // Show the marker by adding it back to map
+                item.addTo(Map_.map)
+                delete item._wasHidden
+            }
+        }
+    },
+    /**
+     * Render permanent point markers for a feature's point template fields
+     * @param {object} feature - GeoJSON feature with properties
+     * @param {number} fileId - ID of the file containing the feature
+     * @param {string} layerId - Layer ID (e.g., 'DrawTool_123')
+     */
+    renderAssociatedPoints: function (feature, fileId, layerId) {
+        // Get the file's template
+        const file = DrawTool.getFileObjectWithId(fileId)
+        if (!file || !file.template || !file.template.template) return
+
+        const template = file.template.template
+
+        // Find all point type fields in the template
+        const pointFields = template.filter((t) => t.type === 'point')
+        if (pointFields.length === 0) return
+
+        // Remove any existing associated points for this feature first
+        if (feature.properties && feature.properties._) {
+            Files.removeAssociatedPoints(feature.properties._.id, layerId)
+        }
+
+        // Ensure point marker pane exists with high z-index
+        if (!Map_.map.getPane('drawToolPoints')) {
+            Map_.map.createPane('drawToolPoints')
+            Map_.map.getPane('drawToolPoints').style.zIndex = 650
+        }
+
+        // Render points for each point field
+        pointFields.forEach((pointField) => {
+            const points = feature.properties[pointField.field]
+            if (!points || !Array.isArray(points) || points.length === 0) return
+
+            points.forEach((point) => {
+                // Create permanent circle marker
+                const marker = L.circleMarker(
+                    [point.coords[1], point.coords[0]],
+                    {
+                        radius: 6,
+                        weight: 2,
+                        color: 'black',  // Stroke is always black
+                        fillColor: point.color,
+                        fillOpacity: 0.8,
+                        pane: 'drawToolPoints',
+                    }
+                )
+
+                // Mark as associated point (not an independent feature)
+                marker._isAssociatedPoint = true
+                marker._parentFeatureId = feature.properties._.id
+
+                // Bind popup with point name and parent feature name
+                const popupContent = `
+                    <div style="font-size: 13px;">
+                        <strong>${F_.sanitize(point.name)}</strong><br>
+                        <em>Parent: ${F_.sanitize(
+                            feature.properties.name || 'Unnamed Feature'
+                        )}</em>
+                    </div>
+                `
+                marker.bindPopup(popupContent)
+
+                // Add to map
+                marker.addTo(Map_.map)
+
+                // Add to the same layer as parent feature for coordinated visibility
+                L_.layers.layer[layerId].push(marker)
+            })
+        })
+    },
     refreshFile: function (
         id,
         time,
@@ -1787,7 +1923,8 @@ var Files = {
         asPublished,
         cb,
         forceGeoJSON,
-        dontUpdateSourceGeoJSON
+        dontUpdateSourceGeoJSON,
+        forceReload
     ) {
         let parsedId =
             typeof parseInt(id) === 'number' && !Array.isArray(id)
@@ -1799,6 +1936,26 @@ var Files = {
             L_.layers.layer.hasOwnProperty('DrawTool_' + parsedId) == false
         )
             return
+
+        // Check if DynamicExtent is enabled and should be used
+        const useDynamicExtent = DrawTool.dynamicExtent.enabled &&
+                                  !forceGeoJSON &&
+                                  !asPublished &&
+                                  parsedId !== 'master'
+
+        if (useDynamicExtent) {
+            // Use extent-based loading
+            Files.reloadFileInExtent(
+                parsedId,
+                time,
+                populateShapesAfter,
+                selectedFeatureIds,
+                cb,
+                dontUpdateSourceGeoJSON,
+                forceReload
+            )
+            return
+        }
 
         var body = {
             id: JSON.stringify(id),
@@ -1840,8 +1997,10 @@ var Files = {
                     var popupLayer = L_.layers.layer[layerId][i]
                     DrawTool.removePopupsFromLayer(popupLayer)
                     Map_.rmNotNull(L_.layers.layer[layerId][i])
-                    L_.layers.layer[layerId][i] = null
                 }
+                // Reset to empty array instead of leaving null holes
+                // This ensures new features start at index 0 and stay synchronized
+                L_.layers.layer[layerId] = []
                 //And from the Globe
                 Globe_.litho.removeLayer('camptool_' + layerId)
             }
@@ -1969,6 +2128,9 @@ var Files = {
                     }
                     coreFeatures.features.push(layer.feature)
                 }
+
+                // Render associated points for this feature
+                Files.renderAssociatedPoints(features[i], index, layerId)
             }
 
             if (coreFeatures.features.length > 0) {
@@ -2010,10 +2172,247 @@ var Files = {
                 DrawTool.toggleLabels(index + '')
             }
 
+            // Restore feature selection after reload
+            const restoreState = DrawTool.dynamicExtent?.pendingRestore
+            if (restoreState?.selectedFeatureId) {
+                const selectedId = restoreState.selectedFeatureId
+                const wasEditing = restoreState.wasEditing || false
+                let featureFound = false
+
+                // Find the reloaded feature with this ID
+                for (let i = 0; i < L_.layers.layer[layerId].length; i++) {
+                    const layer = L_.layers.layer[layerId][i]
+                    if (!layer) continue
+
+                    let feature = layer.feature
+                    let contextMenuLayer = layer
+
+                    // Handle arrow/grouped layers
+                    if (!feature && layer.hasOwnProperty('_layers')) {
+                        const sublayers = layer._layers
+                        feature = sublayers[Object.keys(sublayers)[0]]?.feature
+                        contextMenuLayer = sublayers[Object.keys(sublayers)[0]]
+                    }
+
+                    if (feature?.properties?._ && feature.properties._.id === selectedId) {
+                        featureFound = true
+
+                        // Trigger click event on the layer (matching DrawTool_Shapes.js pattern)
+                        // Small delay to ensure layer is fully added to map
+                        setTimeout(() => {
+                            if (layer.hasOwnProperty('_layers')) {
+                                // Arrow layer - fire on first sublayer
+                                layer._layers[Object.keys(layer._layers)[0]].fireEvent('click')
+                            } else {
+                                // Regular layer
+                                layer.fireEvent('click')
+                            }
+
+                            // Restore editing mode if it was active
+                            if (wasEditing && DrawTool.contextMenuLayer?.enableEdit) {
+                                setTimeout(() => {
+                                    if (DrawTool.contextMenuLayer.snapediting) {
+                                        DrawTool.contextMenuLayer.snapediting.enable()
+                                    } else {
+                                        DrawTool.contextMenuLayer.enableEdit()
+                                    }
+                                    DrawTool.isEditing = true
+                                }, 50)
+                            }
+                        }, 10)
+
+                        break
+                    }
+                }
+
+                // If feature not found (panned out of extent), deselect it
+                if (!featureFound) {
+                    if (DrawTool.contextMenuLayer?.feature?.properties?._
+                        && DrawTool.contextMenuLayer.feature.properties._.id === selectedId) {
+                        DrawTool.contextMenuLayer = null
+                        DrawTool.isEditing = false
+                        L_.resetLayerFills()
+                    }
+                }
+
+                // Clear pending restore state
+                delete DrawTool.dynamicExtent.pendingRestore
+            }
+
             if (typeof cb === 'function') {
                 cb()
             }
         }
+    },
+    /**
+     * Reload file features based on current map extent (DynamicExtent)
+     * @param {int} fileId
+     * @param {number} time
+     * @param {boolean} populateShapesAfter
+     * @param {array} selectedFeatureIds
+     * @param {function} cb
+     * @param {boolean} dontUpdateSourceGeoJSON
+     */
+    reloadFileInExtent: function(
+        fileId,
+        time,
+        populateShapesAfter,
+        selectedFeatureIds,
+        cb,
+        dontUpdateSourceGeoJSON,
+        forceReload
+    ) {
+        const parsedId = fileId || 'master'
+
+        // Check if already loading
+        if (DrawTool.dynamicExtent.isLoading[parsedId]) {
+            return // Avoid duplicate requests
+        }
+
+        // Get current map bounds
+        const bounds = Map_.map.getBounds()
+        const zoom = Map_.map.getZoom()
+        const center = Map_.map.getCenter()
+
+        // Get the map's CRS (from L_.layers.data projection or default)
+        const mapCRS = Map_.projection?.epsg || 'EPSG:4326'
+
+        // Check if we should reload based on move threshold (unless forceReload is true)
+        const lastLoc = DrawTool.dynamicExtent.lastRequestedLocation[parsedId]
+        const moveThreshold = DrawTool.dynamicExtent.moveThreshold
+
+        if (lastLoc != null && !forceReload) {
+            // Calculate distance moved
+            const dist = F_.lngLatDistBetween(lastLoc.lng, lastLoc.lat, center.lng, center.lat)
+
+            // Parse threshold (format: "1000" or "1000/z")
+            let thresholdMeters = parseFloat(moveThreshold)
+            if (moveThreshold.indexOf('/z') > -1) {
+                thresholdMeters = thresholdMeters / Math.pow(2, zoom)
+            }
+
+            // Don't reload if we haven't moved far enough
+            if (dist < thresholdMeters) {
+                if (typeof cb === 'function') cb()
+                return
+            }
+        }
+
+        // Mark as loading
+        DrawTool.dynamicExtent.isLoading[parsedId] = true
+
+        // Build request body with extent
+        const body = {
+            id: JSON.stringify(parsedId),
+            time: time || Math.floor(Date.now()),
+            minx: bounds.getWest(),
+            miny: bounds.getSouth(),
+            maxx: bounds.getEast(),
+            maxy: bounds.getNorth(),
+            crs: mapCRS,
+            limit: 1000, // Limit DynamicExtent to 1k features for performance
+        }
+
+        // Add temporal filter if TimeControl is enabled
+        if (typeof TimeControl !== 'undefined' && L_.TimeControl_) {
+            const currentTime = L_.TimeControl_
+            if (currentTime) {
+                try {
+                    const startTime = new Date(L_.TimeControl_.getStartTime()).getTime()
+                    const endTime = new Date(L_.TimeControl_.getEndTime()).getTime()
+                    if (!isNaN(startTime) && !isNaN(endTime)) {
+                        body.startTime = startTime
+                        body.endTime = endTime
+                        body.timeProp = DrawTool.dynamicExtent.timeProp
+                    }
+                } catch (e) {
+                    // TimeControl not available or error getting times
+                }
+            }
+        }
+
+        // Store the requested extent and location
+        DrawTool.dynamicExtent.lastRequestedExtent[parsedId] = {
+            minx: body.minx,
+            miny: body.miny,
+            maxx: body.maxx,
+            maxy: body.maxy,
+            crs: mapCRS,
+            timestamp: Date.now(),
+        }
+        DrawTool.dynamicExtent.lastRequestedLocation[parsedId] = {
+            lng: center.lng,
+            lat: center.lat,
+        }
+
+        // Make API request
+        DrawTool.getFile(body, function(data) {
+            // Mark as no longer loading
+            DrawTool.dynamicExtent.isLoading[parsedId] = false
+
+            if (!data || !data.geojson) {
+                console.error('DrawTool: Failed to load features in extent')
+                if (typeof cb === 'function') cb()
+                return
+            }
+
+            // Track if this file hit the feature limit
+            const features = data.geojson.features
+            const featureCount = features.length
+            const hitLimit = featureCount >= 1000
+
+            // Store truncation state per file
+            if (!DrawTool.dynamicExtent.truncated) {
+                DrawTool.dynamicExtent.truncated = {}
+            }
+
+            // Check if we should show notification (file just turned on)
+            const previouslyTruncated = DrawTool.dynamicExtent.truncated[parsedId]
+            DrawTool.dynamicExtent.truncated[parsedId] = hitLimit
+
+            // Show CursorInfo notification when file turns on and hits limit
+            // Only show if this is a new truncation state (wasn't truncated before, or first time loading)
+            if (hitLimit && !previouslyTruncated) {
+                const fileName = DrawTool.getFileObjectWithId(parsedId)?.file_name || 'file'
+                CursorInfo.update(
+                    `Only showing top 1k features for ${fileName}`,
+                    5000,
+                    false,
+                    { x: 305, y: 6 },
+                    '#ff9800',
+                    'white'
+                )
+            }
+
+            // Don't clear features here - let refreshFile's keepGoing handle it
+            // This prevents flickering where features disappear before new ones load
+
+            // Render new features using existing keepGoing logic
+            if (dontUpdateSourceGeoJSON != true) {
+                DrawTool.fileGeoJSONFeatures[parsedId] = features
+            }
+
+            // Call the keepGoing function from refreshFile with the loaded data
+            // refreshFile with forceGeoJSON will go through keepGoing which clears and re-renders
+            // Only repopulate shapes if:
+            // - Explicitly requested via populateShapesAfter, OR
+            // - Shapes tab is active AND we're in 'onscreen' mode (not filtered)
+            const isShapesTabInOnscreenMode = DrawTool.activeContent === 'shapes' &&
+                                               DrawTool.Shapes &&
+                                               DrawTool.Shapes.mode === 'onscreen'
+            const shouldPopulateShapes = populateShapesAfter || isShapesTabInOnscreenMode
+
+            DrawTool.refreshFile(
+                parsedId,
+                time,
+                shouldPopulateShapes,
+                selectedFeatureIds,
+                false,
+                cb,
+                data.geojson,
+                dontUpdateSourceGeoJSON
+            )
+        })
     },
     /**
      * Adds or removes a file
@@ -2066,6 +2465,14 @@ var Files = {
                 }
                 //And from the Globe
                 Globe_.litho.removeLayer('camptool_' + layerId)
+            }
+
+            // Clean up any temporary point markers when toggling file off
+            DrawTool_Templater.cleanupAllPointMarkers()
+
+            // Clear truncation state when file is turned off so notification shows again on next turn-on
+            if (DrawTool.dynamicExtent && DrawTool.dynamicExtent.truncated) {
+                delete DrawTool.dynamicExtent.truncated[id]
             }
 
             DrawTool.refreshMasterCheckbox()

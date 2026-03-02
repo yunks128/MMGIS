@@ -7,6 +7,58 @@ require("dotenv").config({ path: __dirname + "/../.env" });
 
 const isDocker = utils.isDocker();
 
+function classifyPostgresError(err) {
+  // Check if we have a PostgreSQL error with a code
+  if (!err || !err.parent || !err.parent.code) {
+    return {
+      isExpected: false,
+      type: "unknown",
+      message: err?.message || "Unknown error",
+    };
+  }
+
+  const pgError = err.parent;
+  const code = pgError.code;
+
+  // Database already exists - expected
+  if (code === "42P04") {
+    return {
+      isExpected: true,
+      type: "already_exists",
+      message: pgError.message,
+      code: code,
+    };
+  }
+
+  // Connection-related errors - critical
+  if (code.startsWith("08") || code === "53300") {
+    return {
+      isExpected: false,
+      type: "connection_error",
+      message: pgError.message,
+      code: code,
+    };
+  }
+
+  // Permission errors - critical
+  if (code === "42501") {
+    return {
+      isExpected: false,
+      type: "permission_error",
+      message: pgError.message,
+      code: code,
+    };
+  }
+
+  // All other errors - treat as unexpected/critical
+  return {
+    isExpected: false,
+    type: "unexpected",
+    message: pgError.message,
+    code: code,
+  };
+}
+
 initializeDatabase()
   .then(() => {
     logger("info", "Finished successfully.", "connection");
@@ -56,6 +108,18 @@ async function initializeDatabase() {
         },
       }
     );
+    await baseSequelize
+      .query(`SELECT version();`)
+      .then((version) => {
+        logger(
+          "info",
+          `Database version: ${version[0][0].version}`,
+          "connection"
+        );
+      })
+      .catch((err) => {
+        return null;
+      });
 
     if (
       process.env.WITH_STAC === "true" ||
@@ -72,12 +136,30 @@ async function initializeDatabase() {
           return null;
         })
         .catch((err) => {
-          logger(
-            "info",
-            `Database mmgis-stac already exists. Nothing to do...`,
-            "connection"
-          );
-          keepGoingSTAC();
+          const errorInfo = classifyPostgresError(err);
+
+          if (errorInfo.isExpected) {
+            // Expected error - database already exists
+            logger(
+              "info",
+              `Database mmgis-stac already exists. Nothing to do...`,
+              "connection"
+            );
+            keepGoingSTAC();
+          } else {
+            // Unexpected/critical error
+            logger(
+              errorInfo.type === "connection_error"
+                ? "infrastructure_error"
+                : "error",
+              `Failed to create mmgis-stac database: ${errorInfo.message} (code: ${errorInfo.code})`,
+              "connection",
+              null,
+              err
+            );
+            // Still attempt to continue, but log the real error
+            keepGoingSTAC();
+          }
           return null;
         });
 
@@ -101,7 +183,8 @@ async function initializeDatabase() {
           logger(
             "info",
             `Conformed the mmgis-stac database to pgstac.`,
-            "connection"
+            "connection",
+            output
           );
         } catch (err) {
           logger(
@@ -126,12 +209,30 @@ async function initializeDatabase() {
         return null;
       })
       .catch((err) => {
-        logger(
-          "info",
-          `Database ${process.env.DB_NAME} already exists. Nothing to do...`,
-          "connection"
-        );
-        keepGoing();
+        const errorInfo = classifyPostgresError(err);
+
+        if (errorInfo.isExpected) {
+          // Expected error - database already exists
+          logger(
+            "info",
+            `Database ${process.env.DB_NAME} already exists. Nothing to do...`,
+            "connection"
+          );
+          keepGoing();
+        } else {
+          // Unexpected/critical error
+          logger(
+            errorInfo.type === "connection_error"
+              ? "infrastructure_error"
+              : "error",
+            `Failed to create ${process.env.DB_NAME} database: ${errorInfo.message} (code: ${errorInfo.code})`,
+            "connection",
+            null,
+            err
+          );
+          // Still attempt to continue, but log the real error
+          keepGoing();
+        }
         return null;
       });
 
@@ -216,9 +317,9 @@ async function initializeDatabase() {
               "expire" timestamp(6) NOT NULL
             )
             WITH (OIDS=FALSE);
-            
+
             ALTER TABLE "session" ADD CONSTRAINT "session_pkey" PRIMARY KEY ("sid") NOT DEFERRABLE INITIALLY IMMEDIATE;
-            
+
             CREATE INDEX "IDX_session_expire" ON "session" ("expire");`
             )
             .then(() => {
@@ -233,6 +334,29 @@ async function initializeDatabase() {
               );
               return null;
             });
+
+          // Add spatial indexes for DrawTool dynamicExtent performance
+          await sequelize
+            .query(`
+              CREATE INDEX IF NOT EXISTS idx_user_features_geom
+              ON user_features USING GIST (geom);
+
+              CREATE INDEX IF NOT EXISTS idx_user_features_tests_geom
+              ON user_features_tests USING GIST (geom);
+            `)
+            .then(() => {
+              logger("info", `Created spatial indexes on user_features tables.`, "connection");
+              return null;
+            })
+            .catch((err) => {
+              logger(
+                "info",
+                `Spatial indexes on user_features tables already exist or failed to create. Nothing to do...`,
+                "connection"
+              );
+              return null;
+            });
+
           resolve();
         })
         .catch((err) => {

@@ -6,7 +6,6 @@ import Attributions from '../../Ancillary/Attributions'
 import ToolController_ from '../../Basics/ToolController_/ToolController_'
 import LayerGeologic from './LayerGeologic/LayerGeologic'
 import $ from 'jquery'
-import * as d3 from 'd3'
 
 const L_ = {
     url: window.location.href,
@@ -37,6 +36,7 @@ const L_ = {
         filters: {}, // layerFilters
         nameToUUID: {},
         refreshIntervals: {}, // In order to reloadLayer
+        refreshFailed: {}, // Track layers with failed refreshes
     },
     // ===== Private ======
     //Index -> layer name
@@ -76,7 +76,7 @@ const L_ = {
     toggledOffFeatures: [],
     mapAndGlobeLinked: false,
     addLayerQueue: [],
-    _layersBeingMade: {},
+    _layersBeingMade: {}, // Global layer construction lock (default for main map; offscreen maps use their own)
     _onLoadCallbacks: [],
     _loaded: false,
     init: async function (configData, missionsList, urlOnLayers) {
@@ -244,10 +244,86 @@ const L_ = {
         if (L_._onSpecificLayerToggleSubscriptions[fid] != null)
             delete L_._onSpecificLayerToggleSubscriptions[fid]
     },
+    /**
+     * Transforms a STAC collection URL (stac-collection:name?params) into a proper HTTP URL
+     * for TiTiler PgSTAC endpoints.
+     *
+     * @param {string} url - The URL to transform (may or may not be a stac-collection: URL)
+     * @param {object} layerData - The layer configuration object
+     * @param {string} type - The type of endpoint to generate ('tile' or 'image')
+     * @returns {string} - The transformed URL or the original URL if not a STAC URL
+     */
+    transformStacUrl(url, layerData, type = 'tile') {
+        if (!url || typeof url !== 'string') return url
+
+        // Check if this is a STAC collection URL
+        const lowerUrl = url.toLowerCase()
+        if (!lowerUrl.startsWith('stac-collection:')) return url
+
+        // Parse the STAC URL: stac-collection:collection_name?params
+        const splitColonUrl = url.split(':')
+        if (splitColonUrl.length < 2) return url
+
+        const splitParams = splitColonUrl[1].split('?')
+        const collectionName = splitParams[0]
+
+        // Build bands parameter (only if no expression exists)
+        let bandsParam = ''
+        if (
+            layerData &&
+            (!layerData.cogExpression || layerData.cogExpression.trim() === '')
+        ) {
+            const bands = layerData.cogBands
+            if (bands != null) {
+                bands.forEach((band) => {
+                    if (band != null) bandsParam += `&bidx=${band}`
+                })
+            }
+        }
+
+        // Build resampling parameter
+        let resamplingParam = ''
+        if (layerData && layerData.cogResampling) {
+            resamplingParam = `&resampling=${layerData.cogResampling}`
+        }
+
+        // Build the base URL
+        const origin = window.location.origin
+        const pathname = (window.location.pathname || '').replace(/\/$/g, '')
+
+        // Generate different endpoints based on type
+        if (type === 'tile') {
+            // Tile endpoint for raster tiles
+            return `${origin}${pathname}/titilerpgstac/collections/${collectionName}/tiles/${
+                (layerData && layerData.tileMatrixSet) || 'WebMercatorQuad'
+            }/{z}/{x}/{y}?assets=asset${bandsParam}${resamplingParam}`
+        } else {
+            // For images, we use preview endpoint
+            // Note: STAC collections are typically designed for tile serving
+            if (layerData && layerData.name) {
+                console.warn(
+                    `STAC layer "${layerData.name}" is configured as an image layer. ` +
+                        `STAC collections work best with tile layer type. ` +
+                        `Attempting to use preview endpoint.`
+                )
+            }
+            return `${origin}${pathname}/titilerpgstac/collections/${collectionName}/preview?assets=asset${bandsParam}${resamplingParam}`
+        }
+    },
     getUrl: function (type, url, layerData) {
         let wasCOG = false
 
         let nextUrl = url
+
+        // Handle STAC collection URLs using shared transformation function
+        if (
+            nextUrl != null &&
+            nextUrl.toLowerCase().startsWith('stac-collection:')
+        ) {
+            nextUrl = L_.transformStacUrl(nextUrl, layerData, type)
+            // After transformation, nextUrl is now an absolute HTTP URL
+        }
+
         if (nextUrl != null && nextUrl.startsWith('COG:')) {
             nextUrl = nextUrl.slice(4)
             wasCOG = true
@@ -505,7 +581,7 @@ const L_ = {
                         minZoom: s.minZoom,
                         maxZoom: s.maxNativeZoom,
                         //boundingBox: s.boundingBox,
-                        //time: s.time == null ? '' : s.time.end,
+                        time: s.time,
                     })
                 } else if (s.type === 'data') {
                 } else if (s.type === 'model') {
@@ -960,7 +1036,7 @@ const L_ = {
                             minZoom: s.minZoom,
                             maxZoom: s.maxNativeZoom,
                             //boundingBox: s.boundingBox,
-                            //time: s.time == null ? '' : s.time.end,
+                            time: s.time,
                         })
                 } else if (s.type === 'model') {
                     L_.Globe_.litho.addLayer('model', {
@@ -1051,8 +1127,8 @@ const L_ = {
                     geojson.features
                         ? geojson.features
                         : geojson.length > 0 && geojson[0].type === 'Feature'
-                        ? geojson
-                        : null
+                          ? geojson
+                          : null
                 )
             if (keepLastN && keepLastN > 0) {
                 layer._sourceGeoJSON.features =
@@ -1140,13 +1216,17 @@ const L_ = {
 
         if (layer) {
             const props = layer.feature?.properties || layer.properties || {}
-            L_.Globe_.highlight(
-                L_.Globe_.findSpriteObject(
-                    layer.options.layerName,
-                    props[layer.useKeyAsName]
-                ),
-                false
-            )
+
+            // Highlight the feature in Globe
+            if (
+                L_.Globe_ &&
+                L_.Globe_.highlight &&
+                layer.feature &&
+                layer.options?.layerName
+            ) {
+                L_.Globe_.highlight(layer.options.layerName, layer.feature)
+            }
+
             L_.Viewer_.highlight(layer)
         }
 
@@ -1914,7 +1994,7 @@ const L_ = {
                                 layer.feature.properties._.file_id +
                                 '_' +
                                 layer.feature.properties._.id
-                            d3.select(id).style(
+                            $(id).css(
                                 'color',
                                 layer.feature.properties.style.fillColor
                             )
@@ -2059,6 +2139,27 @@ const L_ = {
     // if field is null, relation is relative to initial geojson order
     // otherwise sort by field first
     selectFeature(layerName, feature, relation, field) {
+        // Helper function to round coordinates to match GEOJSON_PRECISION
+        const roundCoordinates = (coords, precision) => {
+            if (typeof coords[0] === 'number') {
+                // Single coordinate pair [lng, lat]
+                return coords.map((c) => parseFloat(c.toFixed(precision)))
+            } else {
+                // Nested array of coordinates
+                return coords.map((c) => roundCoordinates(c, precision))
+            }
+        }
+
+        const roundGeometry = (geometry) => {
+            if (!geometry || !geometry.coordinates) return geometry
+            const rounded = JSON.parse(JSON.stringify(geometry))
+            rounded.coordinates = roundCoordinates(
+                rounded.coordinates,
+                L_.GEOJSON_PRECISION
+            )
+            return rounded
+        }
+
         let f = JSON.parse(JSON.stringify(feature))
         layerName = L_.asLayerUUID(layerName)
         const layer = L_.layers.layer[layerName]
@@ -2097,15 +2198,52 @@ const L_ = {
                 if (lfeatureWithout_.properties?.feature_id != null)
                     delete lfeatureWithout_.properties.feature_id
 
-                if (
-                    F_.isEqual(layers[l].feature.geometry, f.geometry, true) &&
-                    F_.isEqual(
-                        lfeatureWithout_.properties,
-                        featureWithout_.properties,
-                        true
-                    )
-                ) {
+                // Round both geometries to GEOJSON_PRECISION before comparing
+                // This accounts for precision differences between Cesium (which receives
+                // precision-reduced GeoJSON) and Leaflet (which has full precision)
+                const roundedClickedGeometry = roundGeometry(f.geometry)
+                const roundedLayerGeometry = roundGeometry(
+                    layers[l].feature.geometry
+                )
+
+                const geometryMatch = F_.isEqual(
+                    roundedLayerGeometry,
+                    roundedClickedGeometry,
+                    true
+                )
+                const propertiesMatch = F_.isEqual(
+                    lfeatureWithout_.properties,
+                    featureWithout_.properties,
+                    true
+                )
+
+                if (geometryMatch && propertiesMatch) {
                     if (layers[layerKeys[i + (relation || 0)]] != null) {
+                        // Set flag to prevent Globe click handler from firing
+                        if (
+                            L_.Globe_ &&
+                            L_.Globe_.litho &&
+                            L_.Globe_.litho._justSelectedFromMap !== undefined
+                        ) {
+                            L_.Globe_.litho._justSelectedFromMap = true
+                            // Clear flag after short delay
+                            if (L_.Globe_.litho._justSelectedTimeout) {
+                                clearTimeout(
+                                    L_.Globe_.litho._justSelectedTimeout
+                                )
+                            }
+                            L_.Globe_.litho._justSelectedTimeout = setTimeout(
+                                () => {
+                                    L_.Globe_.litho._justSelectedFromMap = false
+                                },
+                                500
+                            )
+                        }
+
+                        // Highlight the feature in Globe
+                        if (L_.Globe_ && L_.Globe_.highlight) {
+                            L_.Globe_.highlight(layerName, f)
+                        }
                         layers[layerKeys[i + (relation || 0)]].fireEvent(
                             'click'
                         )

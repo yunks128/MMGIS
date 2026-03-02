@@ -41,6 +41,9 @@ var Editing = {
     ) {
         if (!DrawTool.open && !displayOnly) return
 
+        // Clean up any temporary point markers when switching features
+        DrawTool_Templater.cleanupAllPointMarkers()
+
         // Force corner
         x = 40
         y = 40
@@ -57,6 +60,66 @@ var Editing = {
         ) {
             DrawTool.contextMenuLayer.justDragged = false
             return
+        }
+
+        // Check if we're showing the context menu for the same feature that's already displayed
+        // This preserves unsaved changes in the edit panel during dynamicExtent reloads
+        if (DrawTool.contextMenuLayer && layer && index != null) {
+            const currentFeatureId =
+                DrawTool.contextMenuLayer.feature?.properties?._.id
+
+            // Get the actual Leaflet layer object (layer param is the layer name, not the object!)
+            var shape = L_.layers.layer[layer][index]
+
+            if (shape) {
+                // Get the new feature ID, handling arrow layers
+                let newFeatureId
+                const isArrowLayer =
+                    shape.hasOwnProperty('_layers') &&
+                    !(
+                        shape.hasOwnProperty('feature') &&
+                        shape.feature.properties.arrow == true
+                    )
+
+                if (isArrowLayer) {
+                    newFeatureId =
+                        shape._layers[Object.keys(shape._layers)[0]]?.feature
+                            ?.properties?._.id
+                } else {
+                    newFeatureId = shape.feature?.properties?._.id
+                }
+
+                if (
+                    currentFeatureId &&
+                    newFeatureId &&
+                    currentFeatureId === newFeatureId
+                ) {
+                    // Same feature - just update the layer reference, don't rebuild panel
+                    // Copy over any custom methods/properties from the old layer to the new one
+                    const oldLayer = DrawTool.contextMenuLayer
+                    const newLayer = isArrowLayer
+                        ? shape._layers[Object.keys(shape._layers)[0]]
+                        : shape
+
+                    // Preserve custom methods/properties that were attached to the old layer
+                    if (oldLayer.resetGeoJSON) {
+                        newLayer.resetGeoJSON = oldLayer.resetGeoJSON
+                    }
+                    if (oldLayer._originalProperties) {
+                        newLayer._originalProperties =
+                            oldLayer._originalProperties
+                    }
+                    if (oldLayer._changesSaved !== undefined) {
+                        newLayer._changesSaved = oldLayer._changesSaved
+                    }
+                    if (oldLayer.justDragged !== undefined) {
+                        newLayer.justDragged = oldLayer.justDragged
+                    }
+
+                    DrawTool.contextMenuLayer = newLayer
+                    return // Skip the rest of showContextMenu to preserve unsaved changes
+                }
+            }
         }
 
         let templater
@@ -316,8 +379,8 @@ var Editing = {
                 style.opacity != null
                     ? style.opacity
                     : fallbackStyle.opacity != null
-                    ? fallbackStyle.opacity
-                    : '1'
+                      ? fallbackStyle.opacity
+                      : '1'
             style.dashArray = style.dashArray || fallbackStyle.dashArray || ''
             style.weight = style.weight || fallbackStyle.weight || '4'
             style.fillColor =
@@ -326,10 +389,10 @@ var Editing = {
                 style.fillOpacity != null
                     ? style.fillOpacity
                     : fallbackStyle.fillOpacity != null
-                    ? fallbackStyle.fillOpacity
-                    : featureType === 'note'
-                    ? '1'
-                    : '0.6'
+                      ? fallbackStyle.fillOpacity
+                      : featureType === 'note'
+                        ? '1'
+                        : '0.6'
             style.symbol = style.symbol || fallbackStyle.symbol || ''
             style.radius = style.radius || fallbackStyle.radius || ''
 
@@ -429,8 +492,8 @@ var Editing = {
                     style.opacity != null
                         ? style.opacity
                         : fallbackStyle.opacity != null
-                        ? fallbackStyle.opacity
-                        : '1'
+                          ? fallbackStyle.opacity
+                          : '1'
                 style.dashArray =
                     style.dashArray || fallbackStyle.dashArray || ''
                 style.weight = style.weight || fallbackStyle.weight || '4'
@@ -440,10 +503,10 @@ var Editing = {
                     style.fillOpacity != null
                         ? style.fillOpacity
                         : fallbackStyle.fillOpacity != null
-                        ? fallbackStyle.fillOpacity
-                        : featureType === 'note'
-                        ? '1'
-                        : '0.6'
+                          ? fallbackStyle.fillOpacity
+                          : featureType === 'note'
+                            ? '1'
+                            : '0.6'
                 style.symbol = style.symbol || fallbackStyle.symbol || ''
                 style.radius = style.radius || fallbackStyle.radius || ''
 
@@ -891,11 +954,27 @@ var Editing = {
         $('#uiRightPanel').empty()
         $('#uiRightPanel').append(markup)
 
+        // Save a deep copy of original properties for reset/cancel functionality
+        if (DrawTool.contextMenuLayer?.feature?.properties) {
+            DrawTool.contextMenuLayer._originalProperties = JSON.parse(
+                JSON.stringify(DrawTool.contextMenuLayer.feature.properties)
+            )
+            // Track whether changes have been saved
+            DrawTool.contextMenuLayer._changesSaved = false
+        }
+
         templater = DrawTool_Templater.renderTemplate(
             'drawToolContextMenuPropertiesTemplate',
             file.template,
             DrawTool.contextMenuLayer?.feature?.properties
         )
+
+        // Hide permanent associated points while editing (temporary edit markers will show)
+        const featureId = DrawTool.contextMenuLayer?.feature?.properties?._?.id
+        if (featureId) {
+            DrawTool.hideAssociatedPoints(featureId, layer)
+        }
+
         $(
             `.drawToolContextMenuPropertiesCollapsible > .drawToolContextMenuPropertiesTitle`
         ).on('click', function () {
@@ -1003,6 +1082,31 @@ var Editing = {
 
         //RESET
         $('.drawToolContextMenuReset').on('click', function () {
+            // Restore original properties
+            if (DrawTool.contextMenuLayer?._originalProperties) {
+                DrawTool.contextMenuLayer.feature.properties = JSON.parse(
+                    JSON.stringify(
+                        DrawTool.contextMenuLayer._originalProperties
+                    )
+                )
+            }
+
+            // Clean up temporary point markers and re-render template from original properties
+            DrawTool_Templater.cleanupAllPointMarkers()
+
+            // Re-render template with restored original properties
+            if (
+                file.template &&
+                DrawTool.contextMenuLayer?.feature?.properties
+            ) {
+                $('#drawToolContextMenuPropertiesTemplate').empty()
+                templater = DrawTool_Templater.renderTemplate(
+                    'drawToolContextMenuPropertiesTemplate',
+                    file.template,
+                    DrawTool.contextMenuLayer.feature.properties
+                )
+            }
+
             resetShape()
         })
         function resetShape(justThis) {
@@ -1174,6 +1278,15 @@ var Editing = {
                 id: properties._.id,
             }
             DrawTool.removeDrawing(body, function () {
+                // Clean up point markers for this specific feature
+                const featureUUID =
+                    properties.uuid || properties._?.id?.toString()
+                if (featureUUID) {
+                    DrawTool_Templater.cleanupPointMarkersForFeature(
+                        featureUUID
+                    )
+                }
+
                 Map_.rmNotNull(DrawTool.contextMenuLayer)
                 L_.layers.layer[DrawTool.lastContextLayerIndexFileId.layer][
                     DrawTool.lastContextLayerIndexFileId.index
@@ -1555,8 +1668,6 @@ var Editing = {
                                     DrawTool.populateShapes()
                                 }
                             )
-                        } else {
-                            console.log('n/a')
                         }
                     }
                 }
@@ -2278,6 +2389,13 @@ var Editing = {
                 )
                 $('.drawToolShapeLi').removeClass('active')
                 elm.find('.drawToolShapeLiItemCheck').removeClass('checked')
+
+                // Clear selection restore state to prevent re-selection after pan
+                if (typeof DrawTool.clearSelectionRestore === 'function') {
+                    DrawTool.clearSelectionRestore()
+                } else {
+                }
+
                 if (
                     typeof DrawTool.contextMenuLayer.disableEdit === 'function'
                 ) {
@@ -2296,10 +2414,61 @@ var Editing = {
                 Map_.rmNotNull(DrawTool.contextMenuLayers[c].selectionLayer)
             DrawTool.contextMenuLayers = []
 
-            if (DrawTool.contextMenuLayer)
-                DrawTool.contextMenuLayer.dragging = false
+            // Capture context menu layer data before clearing it
+            const contextMenuLayer = DrawTool.contextMenuLayer
+            if (contextMenuLayer) {
+                contextMenuLayer.dragging = false
+            }
+
+            // Clean up temporary point markers first
+            DrawTool_Templater.cleanupAllPointMarkers()
+
+            const featureId = contextMenuLayer?.feature?.properties?._?.id
+            const layerId = DrawTool.lastContextLayerIndexFileId?.layer
+
+            // Only restore original properties if changes weren't saved
+            if (
+                contextMenuLayer?._originalProperties &&
+                !contextMenuLayer?._changesSaved
+            ) {
+                // Restore original properties when closing without save
+                contextMenuLayer.feature.properties = JSON.parse(
+                    JSON.stringify(contextMenuLayer._originalProperties)
+                )
+
+                // Remove ALL associated points for this feature (both hidden and visible)
+                if (featureId && layerId && DrawTool.removeAssociatedPoints) {
+                    DrawTool.removeAssociatedPoints(featureId, layerId)
+                }
+
+                // Re-render permanent associated points from restored original properties
+                const feature = contextMenuLayer?.feature
+                if (
+                    featureId &&
+                    layerId &&
+                    feature &&
+                    file?.id &&
+                    DrawTool.renderAssociatedPoints
+                ) {
+                    DrawTool.renderAssociatedPoints(feature, file.id, layerId)
+                }
+            } else if (contextMenuLayer?._changesSaved) {
+                // If changes were saved, refreshFile already updated permanent points
+                // Just show any that were hidden during editing
+                if (featureId && layerId && DrawTool.showAssociatedPoints) {
+                    DrawTool.showAssociatedPoints(featureId, layerId)
+                }
+            }
+
+            // Clear contextMenuLayer to prevent DynamicExtent from capturing it on next pan
+            DrawTool.contextMenuLayer = null
 
             Editing.removeContextMenu()
+
+            // Refresh the shapes list to reflect the deselection
+            if (typeof DrawTool.populateShapes === 'function') {
+                DrawTool.populateShapes()
+            }
         })
 
         //EDIT
@@ -2404,9 +2573,17 @@ var Editing = {
                             reassignUUID: true,
                         },
                         function (data) {
-                            DrawTool.refreshFile(fileid, null, true, [
-                                data.body.id,
-                            ])
+                            DrawTool.refreshFile(
+                                fileid,
+                                null,
+                                true,
+                                [data.body.id],
+                                false,
+                                null,
+                                null,
+                                null,
+                                true
+                            )
 
                             if (DrawTool.isReviewOpen) DrawTool.showReview()
                         },
@@ -2537,6 +2714,11 @@ var Editing = {
                             fileid
                         ) {
                             return function (data) {
+                                // Mark that changes have been saved
+                                if (DrawTool.contextMenuLayer) {
+                                    DrawTool.contextMenuLayer._changesSaved = true
+                                }
+
                                 DrawTool.refreshFile(
                                     fileid,
                                     null,
@@ -2554,7 +2736,10 @@ var Editing = {
                                                 'var(--color-a)'
                                             )
                                         }, 1500)
-                                    }
+                                    },
+                                    null,
+                                    null,
+                                    true
                                 )
 
                                 if (DrawTool.isReviewOpen) DrawTool.showReview()
@@ -2594,7 +2779,12 @@ var Editing = {
                             fileid,
                             null,
                             true,
-                            newSelectedFeatureIds
+                            newSelectedFeatureIds,
+                            false,
+                            null,
+                            null,
+                            null,
+                            true
                         )
                     } else {
                         var l = DrawTool.contextMenuLayers[i]
