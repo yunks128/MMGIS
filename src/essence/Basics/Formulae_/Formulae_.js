@@ -822,8 +822,12 @@ var Formulae_ = {
         return 'zero'
     },
     isUrlAbsolute: function (url) {
+        if (typeof url !== 'string') return false
+        // Protocol-absolute (http://, https://, //) OR root-relative (/path)
+        // Root-relative URLs are absolute relative to the current host and
+        // should NOT be prepended with missionPath.
         const r = new RegExp('^(?:[a-z]+:)?//', 'i')
-        return r.test(url)
+        return r.test(url) || url.charAt(0) === '/'
     },
     csvToJSON: function (csv) {
         if (csv == null) return {}
