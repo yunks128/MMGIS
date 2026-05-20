@@ -24,6 +24,10 @@ function registerPlugin({
   source,
   loggerCategory,
 }) {
+  if (config.enabled === false) {
+    logger("info", `Skipping disabled ${pluginType}: ${name}`, loggerCategory);
+    return false;
+  }
   const errors = validatePluginConfig(config, name, pluginType);
   if (errors.length > 0) {
     for (const e of errors) {
