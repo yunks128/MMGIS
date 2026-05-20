@@ -78,6 +78,28 @@ WORKDIR /usr/src/app
 # Now copy source code - changes here won't invalidate dependency layers
 COPY . .
 
+# Resolve per-plugin dependencies (writes plugin-package.json,
+# plugin-python-requirements.txt, plugin-conda-deps.txt) and install
+# whatever each plugin declared on top of the root deps.
+RUN node scripts/resolve-plugin-deps.js
+
+RUN --mount=type=cache,target=/root/.npm \
+    if [ -s plugin-package.json ] && node -e "process.exit(Object.keys(require('./plugin-package.json').dependencies || {}).length ? 0 : 1)"; then \
+        echo "Installing plugin npm dependencies..." && \
+        node -e "const d=require('./plugin-package.json').dependencies||{};console.log(Object.entries(d).map(([k,v])=>k+'@'+v).join(' '))" \
+            | xargs -r npm install --no-save --no-package-lock --ignore-scripts; \
+    else \
+        echo "No plugin npm dependencies to install."; \
+    fi
+
+RUN if [ -s plugin-python-requirements.txt ] && grep -qv '^#' plugin-python-requirements.txt; then \
+        echo "Installing plugin pip dependencies..." && \
+        source ~/.bashrc && \
+        micromamba run -n mmgis pip install -r plugin-python-requirements.txt; \
+    else \
+        echo "No plugin pip dependencies to install."; \
+    fi
+
 # Build MMGIS main
 RUN npm run build
 
@@ -94,7 +116,7 @@ FROM oraclelinux:8.9 AS runtime
 
 # Runtime dependencies only (smaller, more secure)
 RUN dnf -y update && \
-    dnf -y install ca-certificates && \
+    dnf -y install ca-certificates curl && \
     update-ca-trust enable && \
     update-ca-trust extract && \
     dnf module install -y nodejs:20 && \
@@ -119,6 +141,23 @@ COPY --from=builder /usr/src/app/package-lock.json ./package-lock.json
 RUN --mount=type=cache,target=/root/.npm \
     npm ci --only=production
 
+# Re-install plugin npm deps in the runtime stage. Plugin deps are
+# installed in the builder with `--no-save --no-package-lock`, so they
+# are NOT recorded in `package.json`/`package-lock.json` and would
+# otherwise be lost by the `npm ci` above. Backend plugins that
+# `require()` their declared npm deps at runtime would fail without
+# this step. (Frontend plugin deps are unaffected because webpack
+# bundled them into `./build` during the builder stage.)
+COPY --from=builder /usr/src/app/plugin-package.json ./plugin-package.json
+RUN --mount=type=cache,target=/root/.npm \
+    if [ -s plugin-package.json ] && node -e "process.exit(Object.keys(require('./plugin-package.json').dependencies || {}).length ? 0 : 1)"; then \
+        echo "Installing plugin npm dependencies into runtime image..." && \
+        node -e "const d=require('./plugin-package.json').dependencies||{};console.log(Object.entries(d).map(([k,v])=>k+'@'+v).join(' '))" \
+            | xargs -r npm install --no-save --no-package-lock --ignore-scripts; \
+    else \
+        echo "No plugin npm dependencies to install in runtime image."; \
+    fi
+
 # Copy built artifacts from builder
 COPY --from=builder /usr/src/app/build ./build
 COPY --from=builder /usr/src/app/configure/build ./configure/build
@@ -141,7 +180,7 @@ COPY --from=builder /usr/src/app/spice ./spice
 COPY --from=builder /usr/src/app/adjacent-servers ./adjacent-servers
 COPY --from=builder /usr/src/app/examples ./examples
 COPY --from=builder /usr/src/app/private ./private
-COPY --from=builder /usr/src/app/prepare ./prepare
+COPY --from=builder /usr/src/app/blueprints ./blueprints
 
 RUN chmod 755 _docker-entrypoint.sh
 

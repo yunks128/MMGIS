@@ -4,11 +4,12 @@ import F_ from '../../Basics/Formulae_/Formulae_'
 import L_ from '../../Basics/Layers_/Layers_'
 import Map_ from '../../Basics/Map_/Map_'
 
-import DataShaders from '../../Ancillary/DataShaders'
+import DataShaders from '../../services/DataShaders'
 import LayerInfoModal from './LayerInfoModal/LayerInfoModal'
 import Filtering from '../../Basics/Layers_/Filtering/Filtering'
-import Help from '../../Ancillary/Help'
-import CursorInfo from '../../Ancillary/CursorInfo'
+import Help from '../../Basics/UserInterface_/components/Help/Help'
+import CursorInfo from '../../Basics/UserInterface_/components/CursorInfo/CursorInfo'
+import Toast from '../../../design-system/components/Toast/Toast'
 import TimeUI from '../../Basics/TimeControl_/TimeUI'
 
 import LegendTool from '../Legend/LegendTool.js'
@@ -24,6 +25,7 @@ import {
     data as colormapData,
 } from '../../../external/js-colormaps/js-colormaps.js'
 
+import { isKmlUrl, fetchKmlAsGeoJSON } from '../../Basics/Layers_/LayerCapturer'
 import './LayersTool.css'
 
 const helpKey = 'LayersTool'
@@ -84,10 +86,10 @@ function generateMarkup() {
     // prettier-ignore
     return [
         "<div id='layersTool'>",
-            "<div id='layersToolHeader'>",
+            "<div id='layersToolHeader' class='mmgisToolHeader'>",
                 "<div id='filterLayers'>",
                     "<div class='left'>",
-                        '<div id="title">Layers</div>',
+                        '<div class="mmgisToolTitle">Layers</div>',
                         Help.getComponent(helpKey),
                     "</div>",
                     "<div class='right'>",
@@ -143,9 +145,11 @@ var LayersTool = {
         }
 
         if (L_.UserInterface_.isMobile === true) {
-            const mapRect = document.getElementById('map').getBoundingClientRect()
+            const mapRect = document
+                .getElementById('map')
+                .getBoundingClientRect()
             this.width = 'full'
-            this.height = Math.round(mapRect.height * 0.70)
+            this.height = Math.round(mapRect.height * 0.7)
         }
     },
     finalize: function () {
@@ -286,21 +290,28 @@ var LayersTool = {
     },
     populateCogScale: function (layerName) {
         let layer = L_.asLayerUUID(layerName)
+        if (layer == null) return
         let units = ''
         layer = L_.layers.data[layer]
+        if (layer == null) return
         if (L_.layers.layer[layer.name] === null) return
 
+        // data layers use demtileurl; other layers use url
+        const layerUrl = layer.url || layer.demtileurl || ''
+        if (typeof layerUrl !== 'string') return
         if (
-            !layer.url.startsWith('stac-collection:') &&
-            !layer.url.startsWith('COG:') &&
+            !layerUrl.startsWith('stac-collection:') &&
+            !layerUrl.startsWith('COG:') &&
             layer.type !== 'image' &&
-            layer.type !== 'velocity'
+            layer.type !== 'velocity' &&
+            !(layer.type === 'data' && layer.variables?.shader?.ramps)
         )
             return
         if (
+            layer.type !== 'data' &&
             layer.cogTransform !== true &&
-            (layer.url.startsWith('stac-collection:') ||
-                layer.url.startsWith('COG:') ||
+            (layerUrl.startsWith('stac-collection:') ||
+                layerUrl.startsWith('COG:') ||
                 layer.type === 'image')
         )
             return
@@ -317,6 +328,8 @@ var LayersTool = {
             } else {
                 units = layer.variables?.streamlines?.units ?? ''
             }
+        } else if (layer.type === 'data') {
+            units = layer.variables?.shader?.units ?? ''
         } else {
             units = layer.cogUnits
         }
@@ -340,18 +353,24 @@ var LayersTool = {
             context.drawImage(imgElement, 0, 0, 256, 1, 0, 0, 256, 1)
         }
 
-        const min =
-            layer.currentCogMin == null
-                ? layer.cogMin == null
-                    ? layer.variables?.streamlines?.minVelocity
-                    : layer.cogMin
-                : layer.currentCogMin
-        const max =
-            layer.currentCogMax == null
-                ? layer.cogMax == null
-                    ? layer.variables?.streamlines?.maxVelocity
-                    : layer.cogMax
-                : layer.currentCogMax
+        let min, max
+        if (layer.type === 'data' && L_.layers.layer[layer.name]) {
+            min = L_.layers.layer[layer.name].minValue
+            max = L_.layers.layer[layer.name].maxValue
+        } else {
+            min =
+                layer.currentCogMin == null
+                    ? layer.cogMin == null
+                        ? layer.variables?.streamlines?.minVelocity
+                        : layer.cogMin
+                    : layer.currentCogMin
+            max =
+                layer.currentCogMax == null
+                    ? layer.cogMax == null
+                        ? layer.variables?.streamlines?.maxVelocity
+                        : layer.cogMax
+                    : layer.currentCogMax
+        }
 
         for (let i = 0; i < 9; i++) {
             let value =
@@ -365,7 +384,26 @@ var LayersTool = {
             }
 
             let color
-            if (
+            if (layer.type === 'data' && layer.variables?.shader?.ramps) {
+                const ramp = layer.variables.shader.ramps[
+                    L_.layers.layer[layer.name]?.rampIdx || 0
+                ] || layer.variables.shader.ramps[0]
+                const t = i / 8
+                const rampPos = t * (ramp.length - 1)
+                const lo = Math.floor(rampPos)
+                const hi = Math.min(lo + 1, ramp.length - 1)
+                const frac = rampPos - lo
+                const cLo = F_.hexToRGB(ramp[lo])
+                const cHi = F_.hexToRGB(ramp[hi])
+                if (cLo && cHi) {
+                    const r = Math.round(cLo.r + (cHi.r - cLo.r) * frac)
+                    const g = Math.round(cLo.g + (cHi.g - cLo.g) * frac)
+                    const b = Math.round(cLo.b + (cHi.b - cLo.b) * frac)
+                    color = `rgb(${r}, ${g}, ${b})`
+                } else {
+                    color = 'transparent'
+                }
+            } else if (
                 imgElement &&
                 imgElement.complete &&
                 imgElement.naturalHeight !== 0 &&
@@ -498,20 +536,18 @@ function interfaceWithMMGIS(fromInit) {
         separateFromMMGIS()
     }
 
-    const divID = L_.UserInterface_.isMobile === true ?  '#tools' : '#toolPanel'
+    const divID = L_.UserInterface_.isMobile === true ? '#tools' : '#toolPanel'
 
     const toolsContainer = $(divID)
     //Clear it
     toolsContainer.empty()
     //Add a semantic container
-    const tools = $('<div>')
-        .attr('id', 'layersTool')
-        .css({
-            'display': 'flex',
-            'flex-flow': 'column',
-            'overflow': 'hidden',
-            'height': '100%'
-        })
+    const tools = $('<div>').attr('id', 'layersTool').css({
+        display: 'flex',
+        'flex-flow': 'column',
+        overflow: 'hidden',
+        height: '100%',
+    })
     toolsContainer.append(tools)
 
     if (fromInit) tools.css('display', 'none')
@@ -991,7 +1027,11 @@ function interfaceWithMMGIS(fromInit) {
                     additionalSettings = ''
                     const shader = F_.getIn(node[i], 'variables.shader')
 
-                    if (shader && DataShaders[shader.type]) {
+                    if (
+                        shader &&
+                        DataShaders[shader.type] &&
+                        typeof DataShaders[shader.type].getHTML === 'function'
+                    ) {
                         // prettier-ignore
                         additionalSettings = [
                             DataShaders[shader.type].getHTML(node[i].name, shader)
@@ -1421,11 +1461,13 @@ function interfaceWithMMGIS(fromInit) {
                             )
                     }
 
-                    // Populate the legends for tile (COG), image, and velocity layers
+                    // Populate the legends for tile (COG), image, velocity, and data layers
                     if (
                         (['image', 'tile'].includes(node[i].type) &&
                             node[i].cogTransform) ||
-                        node[i].type === 'velocity'
+                        node[i].type === 'velocity' ||
+                        (node[i].type === 'data' &&
+                            F_.getIn(node[i], 'variables.shader.type') === 'colorize')
                     ) {
                         LayersTool.populateCogScale(node[i].name)
                     }
@@ -1486,6 +1528,8 @@ function interfaceWithMMGIS(fromInit) {
                 L_.layers.layer[layerName] == null
             )
                 li.addClass('layernotfound')
+
+            if (!checkbox.hasClass('on')) li.removeClass('gears_on')
 
             if (checkbox.hasClass('on')) {
                 if (
@@ -1752,26 +1796,12 @@ function interfaceWithMMGIS(fromInit) {
         const layer = L_.layers.layer[layerName]
 
         if (!data || !layer) {
-            CursorInfo.update(
-                'Unable to locate layer.',
-                4000,
-                true,
-                { x: 395, y: 6 },
-                '#e9ff26',
-                'black'
-            )
+            Toast.warning('Unable to locate layer.', 4000)
             return
         }
 
         if (L_.layers.on[layerName] !== true) {
-            CursorInfo.update(
-                'Please turn the layer on before locating.',
-                4000,
-                true,
-                { x: 395, y: 6 },
-                '#e9ff26',
-                'black'
-            )
+            Toast.warning('Please turn the layer on before locating.', 4000)
             return
         }
 
@@ -1784,25 +1814,11 @@ function interfaceWithMMGIS(fromInit) {
                     [data.boundingBox[3], data.boundingBox[2]],
                 ])
             } else {
-                CursorInfo.update(
-                    'Unable to locate layer.',
-                    4000,
-                    true,
-                    { x: 395, y: 6 },
-                    '#e9ff26',
-                    'black'
-                )
+                Toast.warning('Unable to locate layer.', 4000)
                 return
             }
         } catch (err) {
-            CursorInfo.update(
-                'Unable to locate layer.',
-                4000,
-                true,
-                { x: 385, y: 6 },
-                '#e9ff26',
-                'black'
-            )
+            Toast.warning('Unable to locate layer.', 4000)
             return
         }
     })
@@ -1827,23 +1843,9 @@ function interfaceWithMMGIS(fromInit) {
             // Update TimeUI with the layer's data extent
             TimeUI.updateTimes(startTime, endTime, endTime)
 
-            CursorInfo.update(
-                'Global time set to layer extent.',
-                3000,
-                false,
-                { x: 395, y: 6 },
-                '#0792c5',
-                'white'
-            )
+            Toast.info('Global time set to layer extent.', 3000)
         } else {
-            CursorInfo.update(
-                'Layer data extent not configured!',
-                3000,
-                true,
-                { x: 395, y: 6 },
-                '#ff2626',
-                'white'
-            )
+            Toast.error('Layer data extent not configured!', 3000)
         }
     })
 
@@ -1880,14 +1882,7 @@ function interfaceWithMMGIS(fromInit) {
         else coords = 'source'
 
         if (L_.layers.layer[layerUUID] === false) {
-            CursorInfo.update(
-                'Please turn layer on before exporting.',
-                6000,
-                true,
-                { x: 385, y: 6 },
-                '#e9ff26',
-                'black'
-            )
+            Toast.warning('Please turn layer on before exporting.', 6000)
             return
         }
 
@@ -1940,14 +1935,7 @@ function interfaceWithMMGIS(fromInit) {
                                 })
                         },
                         function (err) {
-                            CursorInfo.update(
-                                `Failed to generate shapefile's .prj.`,
-                                6000,
-                                true,
-                                { x: 385, y: 6 },
-                                '#e9ff26',
-                                'black'
-                            )
+                            Toast.warning(`Failed to generate shapefile's .prj.`, 6000)
                         }
                     )
                     break
@@ -1970,14 +1958,7 @@ function interfaceWithMMGIS(fromInit) {
                         download(data.body)
                     },
                     (data) => {
-                        CursorInfo.update(
-                            `Failed to download ${layerDisplayName}.`,
-                            6000,
-                            true,
-                            { x: 385, y: 6 },
-                            '#e9ff26',
-                            'black'
-                        )
+                        Toast.error(`Failed to download ${layerDisplayName}.`, 6000)
                         console.warn(
                             'ERROR: ' +
                                 data.status +
@@ -1995,24 +1976,42 @@ function interfaceWithMMGIS(fromInit) {
                     layerData.url,
                     layerData
                 )
-                $.getJSON(layerUrl, function (data) {
-                    if (data.hasOwnProperty('Features')) {
-                        data.features = data.Features
-                        delete data.Features
-                    }
-
-                    download(data)
-                }).fail(function (jqXHR, textStatus, errorThrown) {
-                    //Tell the console council about what happened
-                    console.warn(
-                        'ERROR! ' +
-                            textStatus +
-                            ' in ' +
-                            layerUrl +
-                            ' /// ' +
-                            errorThrown
+                if (isKmlUrl(layerUrl)) {
+                    fetchKmlAsGeoJSON(
+                        layerUrl,
+                        (data) => {
+                            download(data)
+                        },
+                        (jqXHR, textStatus, errorThrown) => {
+                            console.warn(
+                                'ERROR! ' +
+                                    textStatus +
+                                    ' in ' +
+                                    layerUrl +
+                                    ' /// ' +
+                                    errorThrown
+                            )
+                        }
                     )
-                })
+                } else {
+                    $.getJSON(layerUrl, function (data) {
+                        if (data.hasOwnProperty('Features')) {
+                            data.features = data.Features
+                            delete data.Features
+                        }
+
+                        download(data)
+                    }).fail(function (jqXHR, textStatus, errorThrown) {
+                        console.warn(
+                            'ERROR! ' +
+                                textStatus +
+                                ' in ' +
+                                layerUrl +
+                                ' /// ' +
+                                errorThrown
+                        )
+                    })
+                }
             }
         } else if (extent == 'raw-extent') {
             const body = JSON.parse(
@@ -2033,14 +2032,7 @@ function interfaceWithMMGIS(fromInit) {
                     download(data)
                 },
                 (data) => {
-                    CursorInfo.update(
-                        `Failed to download ${layerDisplayName}.`,
-                        6000,
-                        true,
-                        { x: 385, y: 6 },
-                        '#e9ff26',
-                        'black'
-                    )
+                    Toast.error(`Failed to download ${layerDisplayName}.`, 6000)
                     console.warn(
                         'ERROR: ' +
                             data.status +
@@ -2122,6 +2114,18 @@ function interfaceWithMMGIS(fromInit) {
                 currentCogMin: layer.currentCogMin,
                 currentCogMax: layer.currentCogMax,
             })
+
+            // Also update Cesium if Globe exists
+            if (
+                L_.Globe_ &&
+                L_.Globe_.litho &&
+                L_.Globe_.litho.updateLayerCogParameters
+            ) {
+                L_.Globe_.litho.updateLayerCogParameters(layer.name, {
+                    currentCogMin: layer.currentCogMin,
+                    currentCogMax: layer.currentCogMax,
+                })
+            }
         } else if (layer.type === 'image') {
             // TODO FIXME DOUBLE CHECK
             updateImageRange(
@@ -2166,6 +2170,17 @@ function interfaceWithMMGIS(fromInit) {
             L_.layers.layer[layer.name].refresh(null, true, {
                 currentCogExpression: newExpression,
             })
+
+            // Also update Cesium
+            if (
+                L_.Globe_ &&
+                L_.Globe_.litho &&
+                L_.Globe_.litho.updateLayerCogParameters
+            ) {
+                L_.Globe_.litho.updateLayerCogParameters(layer.name, {
+                    currentCogExpression: newExpression,
+                })
+            }
         } else if (layer.type === 'image') {
             L_.layers.layer[layer.name].refresh(null, true, {
                 currentCogExpression: newExpression,
@@ -2203,6 +2218,17 @@ function interfaceWithMMGIS(fromInit) {
             L_.layers.layer[layerData.name].refresh(null, true, {
                 currentCogExpression: null,
             })
+
+            // Also update Cesium
+            if (
+                L_.Globe_ &&
+                L_.Globe_.litho &&
+                L_.Globe_.litho.updateLayerCogParameters
+            ) {
+                L_.Globe_.litho.updateLayerCogParameters(layerData.name, {
+                    currentCogExpression: null,
+                })
+            }
         } else if (layerData.type === 'image') {
             L_.layers.layer[layerData.name].refresh(null, true, {
                 currentCogExpression: null,
@@ -2429,6 +2455,17 @@ function interfaceWithMMGIS(fromInit) {
             L_.layers.layer[layer.name].refresh(null, true, {
                 currentCogMin: layer.currentCogMin,
             })
+
+            // Also update Cesium
+            if (
+                L_.Globe_ &&
+                L_.Globe_.litho &&
+                L_.Globe_.litho.updateLayerCogParameters
+            ) {
+                L_.Globe_.litho.updateLayerCogParameters(layer.name, {
+                    currentCogMin: layer.currentCogMin,
+                })
+            }
         } else if (layer.type === 'image') {
             updateImageRange(
                 layer.name,
@@ -2466,6 +2503,17 @@ function interfaceWithMMGIS(fromInit) {
             L_.layers.layer[layer.name].refresh(null, true, {
                 currentCogMax: layer.currentCogMax,
             })
+
+            // Also update Cesium
+            if (
+                L_.Globe_ &&
+                L_.Globe_.litho &&
+                L_.Globe_.litho.updateLayerCogParameters
+            ) {
+                L_.Globe_.litho.updateLayerCogParameters(layer.name, {
+                    currentCogMax: layer.currentCogMax,
+                })
+            }
         } else if (layer.type === 'image') {
             updateImageRange(
                 layer.name,
@@ -2654,7 +2702,11 @@ function interfaceWithMMGIS(fromInit) {
         $('#searchLayers > #collapse').click()
 
         // Expand individual headers based on its configuration settings
-        LayersTool.traverseHeaderLayersExpandedState(L_.configData.layers, {}, 0)
+        LayersTool.traverseHeaderLayersExpandedState(
+            L_.configData.layers,
+            {},
+            0
+        )
     })
 
     $('#filterLayers .right > div').on('click', function () {
@@ -2900,7 +2952,11 @@ function interfaceWithMMGIS(fromInit) {
     if (LayersTool.vars.expanded !== true) {
         $('#searchLayers > #collapse').click()
         // Expand individual headers based on its configuration settings
-        LayersTool.traverseHeaderLayersExpandedState(L_.configData.layers, {}, 0)
+        LayersTool.traverseHeaderLayersExpandedState(
+            L_.configData.layers,
+            {},
+            0
+        )
     }
 
     // Sublayer things
@@ -3106,12 +3162,18 @@ function interfaceWithMMGIS(fromInit) {
         }
     }
 
-    document.addEventListener('layerRefreshStatusChanged', handleRefreshStatusChange)
+    document.addEventListener(
+        'layerRefreshStatusChanged',
+        handleRefreshStatusChange
+    )
 
     //Share everything. Don't take things that aren't yours.
     // Put things back where you found them.
     function separateFromMMGIS() {
-        document.removeEventListener('layerRefreshStatusChanged', handleRefreshStatusChange)
+        document.removeEventListener(
+            'layerRefreshStatusChanged',
+            handleRefreshStatusChange
+        )
     }
 }
 

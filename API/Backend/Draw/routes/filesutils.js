@@ -1,12 +1,17 @@
 const logger = require("../../../logger");
 const Sequelize = require("sequelize");
 const { sequelize } = require("../../../connection");
+const Utils = require("../../../utils.js");
 const fhistories = require("../models/filehistories");
 const Filehistories = fhistories.Filehistories;
 const FilehistoriesTEST = fhistories.FilehistoriesTEST;
 const ufiles = require("../models/userfiles");
 const Userfiles = ufiles.Userfiles;
 const UserfilesTEST = ufiles.UserfilesTEST;
+
+// Safe lookup maps to break SonarQube taint analysis chains (S3649)
+const SAFE_GROUP_OPS = Object.freeze({ 'AND': 'AND', 'OR': 'OR', 'NOT_AND': 'NOT_AND', 'NOT_OR': 'NOT_OR' });
+const SAFE_SQL_OPS = Object.freeze({ '=': '=', '!=': '!=', 'IN': 'IN', '<': '<', '>': '>', '<=': '<=', '>=': '>=', 'LIKE': 'LIKE', 'IS NULL': 'IS NULL', 'IS NOT NULL': 'IS NOT NULL' });
 
 function getfile(req, res, next) {
   let Table = req.body.test === "true" ? UserfilesTEST : Userfiles;
@@ -18,6 +23,7 @@ function getfile(req, res, next) {
       message: "Permission denied.",
       body: {},
     });
+    return;
   }
 
   let published = false;
@@ -210,7 +216,7 @@ function getfile(req, res, next) {
               // Temporal extent parameters
               const startTime = req.body.startTime; // Unix timestamp
               const endTime = req.body.endTime;
-              const timeProp = req.body.timeProp || 'time';
+              const timeProp = Utils.forceAlphaNumUnder(req.body.timeProp || 'time');
 
               // Pagination parameters
               const limit = req.body.limit ? parseInt(req.body.limit) : null;
@@ -223,23 +229,38 @@ function getfile(req, res, next) {
               // Decode filters (following GeodatasetFilterer pattern)
               let filters = null;
               if (req.body.filters != null && req.body.filters !== '') {
-                const filterSplit = req.body.filters.split(',');
-                filters = [];
-                filterSplit.forEach((f) => {
-                  if (f === 'OR' || f === 'AND' || f === 'NOT_AND' || f === 'NOT_OR') {
-                    filters.push({ isGroup: true, op: f });
-                  } else {
-                    const fSplit = f.split('+');
-                    if (fSplit.length >= 4) {
-                      filters.push({
-                        key: fSplit[0],
-                        op: fSplit[1] === 'in' ? ',' : fSplit[1],
-                        type: fSplit[2],
-                        value: fSplit[3].replaceAll('$', ',')
-                      });
+                try {
+                  const filterSplit = req.body.filters.split(',');
+                  filters = [];
+                  filterSplit.forEach((f) => {
+                    if (f === 'OR' || f === 'AND' || f === 'NOT_AND' || f === 'NOT_OR') {
+                      filters.push({ isGroup: true, op: SAFE_GROUP_OPS[f] || null });
+                    } else {
+                      const fSplit = f.split('+');
+                      if (fSplit.length >= 4) {
+                        // Validate field name format (alphanumeric, spaces, dash, underscore only)
+                        const fieldName = fSplit[0];
+                        if (!/^[a-zA-Z0-9 _\-\.]+$/.test(fieldName)) {
+                          throw new Error(`Invalid filter field name: ${fieldName}`);
+                        }
+
+                        filters.push({
+                          key: fieldName.trim(),  // Preserve spaces, just trim whitespace
+                          op: fSplit[1] === 'in' ? ',' : fSplit[1],
+                          type: fSplit[2],
+                          value: fSplit[3].replaceAll('$', ',')
+                        });
+                      }
                     }
-                  }
-                });
+                  });
+                } catch (err) {
+                  logger("error", `Invalid filter format: ${err.message}`, req.originalUrl, req);
+                  return res.status(400).json({
+                    status: 'failure',
+                    message: `Invalid filter format: ${err.message}`,
+                    body: {}
+                  });
+                }
               }
 
               // Note: geometry.type filters are now handled inline within the filter loop
@@ -293,7 +314,7 @@ function getfile(req, res, next) {
                       );
                       currentGroup = [];
                     }
-                    currentGroupOp = filter.op;
+                    currentGroupOp = SAFE_GROUP_OPS[filter.op] || null;
                   } else {
                     // Build SQL condition for this filter
                     const propKey = filter.key;
@@ -328,35 +349,48 @@ function getfile(req, res, next) {
                     } else if (op === 'endswith') {
                       sqlOp = 'LIKE';
                       sqlValue = `%${value}`;
+                    } else if (op === 'isnull') {
+                      sqlOp = 'IS NULL';
+                    } else if (op === 'isnotnull') {
+                      sqlOp = 'IS NOT NULL';
                     }
+
+                    // Break taint chain: lookup from safe constant map
+                    sqlOp = SAFE_SQL_OPS[sqlOp] || '=';
 
                     // Build SQL condition
                     let condition;
 
                     // Special handling for geometry.type (derived field, not a property)
                     if (propKey === 'geometry.type') {
-                      // PostGIS returns geometry types prefixed with 'ST_' (e.g., 'ST_Point')
-                      const geomTypeValue = `ST_${value}`;
-
+                      const geomTypePlaceholder = `geom_type_${idx}`;
                       if (sqlOp === '=') {
-                        condition = `ST_GeometryType(geom) = '${geomTypeValue}'`;
+                        replacements[geomTypePlaceholder] = `ST_${value}`;
+                        condition = `ST_GeometryType(geom) = :${geomTypePlaceholder}`;
                       } else if (sqlOp === '!=') {
-                        condition = `ST_GeometryType(geom) != '${geomTypeValue}'`;
+                        replacements[geomTypePlaceholder] = `ST_${value}`;
+                        condition = `ST_GeometryType(geom) != :${geomTypePlaceholder}`;
                       } else if (sqlOp === 'IN') {
-                        const values = sqlValue.map(v => `'ST_${v.trim()}'`).join(',');
-                        condition = `ST_GeometryType(geom) IN (${values})`;
+                        replacements[geomTypePlaceholder] = sqlValue.map(v => `ST_${v.trim()}`);
+                        condition = `ST_GeometryType(geom) IN (:${geomTypePlaceholder})`;
                       }
                     } else {
                       // Regular property access
                       // NOTE: properties is double-encoded JSON (stored as JSON string, not JSON object)
-                      const propAccess = `((properties#>>'{}')::json->>'${propKey}')`;
+                      // Use Sequelize replacement parameter to prevent SQL injection
+                      const propKeyPlaceholder = `filter_key_${idx}`;
+                      replacements[propKeyPlaceholder] = propKey;
+                      const propAccess = `((properties#>>'{}')::json->>:${propKeyPlaceholder})`;
 
                       // Cast to appropriate type if needed
                       const castPropAccess = filter.type === 'number'
                         ? `(${propAccess})::numeric`
                         : propAccess;
 
-                      if (sqlOp === 'IN') {
+                      if (sqlOp === 'IS NULL' || sqlOp === 'IS NOT NULL') {
+                        // Null checks don't need parameterized values
+                        condition = `${propAccess} ${sqlOp}`;
+                      } else if (sqlOp === 'IN') {
                         const placeholderKey = `filter_${idx}`;
                         condition = `${castPropAccess} IN (:${placeholderKey})`;
                         replacements[placeholderKey] = sqlValue;
@@ -435,7 +469,8 @@ function getfile(req, res, next) {
 
                 if (!isNaN(start) && !isNaN(end)) {
                   // Filter features that have time property in range OR no time property
-                  whereClause += " AND ((properties->>'" + timeProp + "') IS NULL OR (properties->>'" + timeProp + "')::bigint BETWEEN :startTime AND :endTime)";
+                  replacements.timeProp = timeProp;
+                  whereClause += " AND ((properties->>:timeProp) IS NULL OR (properties->>:timeProp)::bigint BETWEEN :startTime AND :endTime)";
                   replacements.startTime = start;
                   replacements.endTime = end;
                   hasTemporalFilter = true;
@@ -458,9 +493,11 @@ function getfile(req, res, next) {
                 // Otherwise, treat it as a JSON property key in the properties column
                 else {
                   // Handle both "properties.key" format and plain "key" format
-                  const propKey = sortBy.startsWith('properties.')
-                    ? sortBy.substring(11)  // Remove "properties." prefix
-                    : sortBy;                // Use as-is (already just the key)
+                  const propKey = Utils.forceAlphaNumUnder(
+                    sortBy.startsWith('properties.')
+                      ? sortBy.substring(11)  // Remove "properties." prefix
+                      : sortBy                // Use as-is (already just the key)
+                  );
 
                   // SQL Injection Prevention: Use Sequelize replacements for the JSON key
                   // We use a replacement parameter for the property key value
@@ -485,7 +522,9 @@ function getfile(req, res, next) {
               // Build LIMIT/OFFSET clause
               let limitClause = '';
               if (limit != null) {
-                limitClause = ` LIMIT ${limit} OFFSET ${offset}`;
+                limitClause = ` LIMIT :limit OFFSET :offset`;
+                replacements.limit = limit;
+                replacements.offset = offset;
               }
 
               const query = `SELECT ${selectClause} FROM user_features${req.body.test === "true" ? "_tests" : ""} WHERE ${whereClause}${orderByClause}${limitClause}`;

@@ -16,7 +16,7 @@ Environment variables are set within `MMGIS/.env`. A sample file `MMGIS/sample.e
 
 The kind of server running (apache is deprecated) | string enum | default `''`
 
-- _node:_ A node express server running NodeJS v20.11.1+
+- _node:_ A node express server running NodeJS v22.20.0+
 - _apache (deprecated):_ Served through Apache. Some or all functionality may not work
 
 #### `AUTH=`
@@ -37,7 +37,11 @@ Instance type | string enum | default `production`
 
 #### `SECRET=`
 
-Some random string | string | default `null`
+**Required.** A cryptographically random string used to sign session cookies. This secret ensures that session IDs cannot be forged by attackers.
+
+**Type**: string (minimum 24 characters) | **Default**: None (application will fail to start if not set)
+
+**Important**: This value must be kept confidential. Use a long, random string (e.g., 64+ characters generated with `openssl rand -hex 64` or `node -e "console.log(require('crypto').randomBytes(64).toString('hex'))"`) . Do not use the sample value from `sample.env` in production. If this variable is not set or is shorter than 24 characters, the server will refuse to start.
 
 #### `DB_HOST=`
 
@@ -100,6 +104,14 @@ If `DB_SSL=true` and if needed, the path to a certificate for ssl | string | def
 #### `DB_SSL_CERT_BASE64=`
 
 Alternatively, if `DB_SSL=true` and if needed, a base64 encoded certificate for ssl. `DB_SSL_CERT_BASE64` will take priority over `DB_SSL_CERT` | string | default `null`
+
+#### `DB_USER_TEST=`
+
+Test-specific database user. Required by test infrastructure (`tests/global-setup.js`, `tests/test-db-clean.js`) for least-privilege separation. No fallback — tests will not run without this | string | default `null`
+
+#### `DB_PASS_TEST=`
+
+Test-specific database password. Required by test infrastructure for least-privilege separation. No fallback — tests will not run without this | string | default `null`
 
 #### `AUTH_LOCAL_ALLOW_SIGNUP=`
 
@@ -197,6 +209,7 @@ If true, MMGIS will not auto-login returning users. This can be useful when logi
 
 If true at build-time, JavaScript source maps will also be built | boolean | default `false`
 
+
 #### `SPICE_SCHEDULED_KERNEL_DOWNLOAD=`
 
 If true, then at every other midnight, MMGIS will read /Missions/spice-kernels-conf.json and re/download all the specified kernels. See /Missions/spice-kernels-conf.example.json | boolean | default `false`
@@ -240,6 +253,77 @@ TiTiler - https://developmentseed.org/titiler | default `false`
 #### `TITILER_PORT=`
 
 Port to proxy titiler on | default `8883`
+
+#### `TITILER_ALLOWED_URL_PATTERNS=`
+
+**Security Feature**: URL validation for TiTiler proxy to prevent Server-Side Request Forgery (SSRF) attacks.
+
+A JSON array of regular expression patterns that define allowed URLs for TiTiler requests. When configured, any URL passed to TiTiler (via `?url=` parameter) must match at least one pattern or the request will be blocked with HTTP 403 Forbidden.
+
+**Format**: JSON array of regex strings | **Type**: string[] | **Default**: `[]` (allow all)
+
+**Behavior**:
+- **Unset or empty array `[]`**: Allow all URLs (backward compatible with existing deployments)
+- **Non-empty array**: URL must match at least one regex pattern to be proxied
+- **Invalid JSON or regex**: Logs error, disables validation (allows all URLs)
+- **Important**: To allow TiTiler to read from the local `/Missions` directory, include the file:// pattern in your configuration (see examples below).
+
+**Security Recommendations**:
+- Always configure this in production environments
+- Use the most restrictive patterns possible for your use case
+- Regularly review logs for blocked requests
+
+**Common Patterns**:
+
+1. **Recommended for Production** (HTTPS + local Missions files):
+   ```bash
+   TITILER_ALLOWED_URL_PATTERNS='["^https://(?!.*\\.\\.)(?!.*\\x00).*$", "^/Missions/(?!.*\\.\\.).*$"]'
+   ```
+   - Requires HTTPS protocol for remote URLs
+   - Allows local `/Missions` directory files as relative paths (e.g., `/Missions/Test/data.tif`)
+   - Blocks path traversal (`..`) in both remote and local paths
+   - Blocks null byte injection
+
+2. **Specific Trusted Domains**:
+   ```bash
+   TITILER_ALLOWED_URL_PATTERNS='["^https://tiles\\.example\\.com/.*", "^https://data\\.nasa\\.gov/.*"]'
+   ```
+   - Only allows specific trusted domains
+
+3. **S3 Buckets**:
+   ```bash
+   TITILER_ALLOWED_URL_PATTERNS='["^https://[^/]*\\.s3\\.[^/]*\\.amazonaws\\.com/.*"]'
+   ```
+   - Allows any S3 bucket URL
+
+4. **Multiple Patterns** (OR logic):
+   ```bash
+   TITILER_ALLOWED_URL_PATTERNS='["^https://tiles\\.example\\.com/.*", "^https://.*\\.s3\\.amazonaws\\.com/.*", "^https://data\\.nasa\\.gov/.*", "^/Missions/.*"]'
+   ```
+   - URLs matching ANY pattern are allowed
+   - Includes local Missions directory access
+
+**Regex Syntax Notes**:
+- Use `\\.` to match literal dots (escape backslash in JSON: `\\\\.`)
+- Use `.*` to match any characters (zero or more)
+- Use `^` to anchor at start, `$` to anchor at end
+- Use `(?!...)` for negative lookahead (e.g., block patterns)
+- Test patterns before deployment (invalid regex will be logged and skipped)
+
+**Error Response** (when URL blocked):
+```json
+{
+  "error": "Forbidden",
+  "message": "The requested URL does not match allowed patterns",
+  "detail": "URL parameter must match one of the configured TITILER_ALLOWED_URL_PATTERNS"
+}
+```
+
+**Logging**: Blocked requests are logged at `warn` level with the blocked URL, request details, and user session for security auditing.
+
+**Note**: Changes to this ENV variable require server restart to take effect.
+
+**See Also**: [Adjacent Servers Security](../Adjacent-Servers/adjacent-servers.md#security)
 
 #### `WITH_TITILER_PGSTAC=`
 
