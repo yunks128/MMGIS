@@ -1,6 +1,6 @@
 @font-face {
   font-family: "Source Sans Pro";
-  src: url(/public/fonts/sourcesanspro/SourceSansPro-Regular.ttf);
+  /* src is set via inline style in login.pug to support ROOT_PATH */
 }
 
 html {
@@ -9,7 +9,7 @@ html {
 }
 
 body {
-  background-image: url(/public/images/contours.png);
+  /* background-image is set via inline style in login.pug to support ROOT_PATH */
   font-family: "Source Sans Pro", sans-serif;
   background-color: #1a1a1a;
   padding: 0;
@@ -207,4 +207,26 @@ img {
 #toggle:hover {
   background: #08aeea;
   color: white;
+}
+@media (max-width: 480px) {
+  .header {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+  }
+  .header > img {
+    left: auto !important;
+  }
+  .footer {
+    padding: 22px !important;
+  }
+  .box input[type="text"],
+  .box input[type="password"] {
+    font-size: 16px;
+  }
+}
+@media (max-width: 420px) {
+  #container {
+    transform: translateX(-50%) translateY(-50%) scale(0.8);
+  }
 }

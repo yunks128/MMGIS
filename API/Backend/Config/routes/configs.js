@@ -14,6 +14,7 @@ const Config = require("../models/config");
 const config_template = require("../../../templates/config_template");
 const userModel = require("../../Users/models/user");
 const User = userModel.User;
+const missionTemplates = require("../../Utils/missionTemplates");
 
 // Sanitize user input to prevent XSS in error messages
 function sanitizeInput(input) {
@@ -46,6 +47,7 @@ const websocket = require("../../../websocket.js");
 const WebSocket = require("isomorphic-ws");
 
 const fs = require("fs");
+const path = require("path");
 const deepmerge = require("deepmerge");
 
 let fullAccess = false;
@@ -245,7 +247,107 @@ router.get("/get", function (req, res, next) {
   get(req, res, next);
 });
 
+/**
+ * Create a Reference Mission demo
+ */
+async function createReferenceMission(req, res, cb) {
+  // Hardcode mission name to "Reference-Mission" (no timestamp)
+  const missionName = "Reference-Mission";
+
+  try {
+    // Check if mission already exists
+    const existingMission = await Config.findOne({
+      where: { mission: missionName },
+    });
+
+    // Create or update Reference Mission
+    const result = await missionTemplates.createReferenceMission(missionName);
+
+    if (existingMission) {
+      // Delete all existing rows for this mission and create a fresh one.
+      // Config.update would stamp every historical version row with the same new
+      // version, causing the MAX(version) query to return all of them and inflate
+      // the "used by" occurrence count.
+      const maxVersion = await Config.max("version", {
+        where: { mission: missionName },
+      });
+      const updatedVersion = (maxVersion ?? 0) + 1;
+
+      await Config.destroy({ where: { mission: missionName } });
+      await Config.create({
+        mission: missionName,
+        config: result.config,
+        version: updatedVersion,
+      });
+
+      logger(
+        "info",
+        `Successfully updated Reference Mission: ${missionName} (v${updatedVersion})`,
+        req.originalUrl,
+        req
+      );
+
+      const response = {
+        status: "success",
+        mission: missionName,
+        version: updatedVersion,
+        message: `Reference Mission updated successfully to version ${updatedVersion}.`,
+      };
+
+      if (cb) cb(response);
+      else res.send(response);
+    } else {
+      // Create new mission
+      const newConfig = {
+        mission: missionName,
+        config: result.config,
+        version: 0,
+      };
+
+      const created = await Config.create(newConfig);
+
+      logger(
+        "info",
+        `Successfully created Reference Mission: ${created.mission}`,
+        req.originalUrl,
+        req
+      );
+
+      const response = {
+        status: "success",
+        mission: created.mission,
+        version: created.version,
+        message: result.message,
+      };
+
+      if (cb) cb(response);
+      else res.send(response);
+    }
+  } catch (err) {
+    logger(
+      "error",
+      "Failed to create/update Reference Mission.",
+      req.originalUrl,
+      req,
+      err
+    );
+
+    const errorResponse = {
+      status: "failure",
+      message: "Failed to create/update Reference Mission.",
+    };
+
+    if (cb) cb(errorResponse);
+    else res.send(errorResponse);
+  }
+}
+
 function add(req, res, next, cb) {
+  // NEW: Check for Reference Mission mode
+  if (req.body.setupReferenceMission === true) {
+    return createReferenceMission(req, res, cb);
+  }
+
   let configTemplate = JSON.parse(JSON.stringify(config_template));
 
   // If a config is provided, deep merge it with the template
@@ -257,11 +359,11 @@ function add(req, res, next, cb) {
   // Set missionFolderName to match the mission name by default
   configTemplate.msv.missionFolderName = req.body.mission;
 
-  // Fix validation logic: use OR conditions instead of AND
+  // Fix validation logic: use OR conditions instead of AND (allow hyphens)
   if (
     req.body.mission !==
       req.body.mission.replace(
-        /[`~!@#$%^&*()|+\-=?;:'",.<>\{\}\[\]\\\/]/gi,
+        /[`~!@#$%^&*()|+=?;:'",.<>\{\}\[\]\\\/]/gi,
         ""
       ) ||
     req.body.mission.length === 0 ||
@@ -378,7 +480,10 @@ function add(req, res, next, cb) {
 
 if (fullAccess)
   router.post("/add", function (req, res, next) {
-    if (req.session.permission !== "111") {
+    const userPermission = req.isLongTermToken
+      ? req.tokenUserPermission
+      : req.session.permission;
+    if (userPermission !== "111") {
       res.send({
         status: "failure",
         message: "Only SuperAdmins can add new missions.",
@@ -413,23 +518,23 @@ function upsert(req, res, next, cb, info) {
 
   const forceClientUpdate = req.body?.forceClientUpdate || false;
 
-  Config.findAll({
+  Config.max("version", {
     where: {
       mission: req.body.mission,
     },
-    order: [["id", "DESC"]],
   })
-    .then((missions) => {
-      missions.every(function (mission, i) {
-        if (hasVersion && missions[i].version == req.body.version) {
-          versionConfig = missions[i].config;
-          return false;
-        }
-        return true;
-      });
+    .then((maxVersion) => {
+      const currentVersion = maxVersion == null || isNaN(maxVersion) ? -1 : maxVersion;
 
-      if (missions && missions.length > 0) return missions[0].version;
-      return -1;
+      if (hasVersion) {
+        return Config.findOne({
+          where: { mission: req.body.mission, version: req.body.version },
+        }).then((match) => {
+          if (match) versionConfig = match.config;
+          return currentVersion;
+        });
+      }
+      return currentVersion;
     })
     .then((version) => {
       let configJSON;
@@ -553,7 +658,10 @@ function upsert(req, res, next, cb, info) {
           }
 
           openWebSocket(
-            req.body,
+            {
+              mission: req.body.mission,
+              config: true,
+            },
             {
               status: "success",
               mission: created.mission,
@@ -602,7 +710,7 @@ router.get("/missions", function (req, res, next) {
   if (req.query.full === "true") {
     sequelize
       .query(
-        "SELECT DISTINCT ON (mission) mission, version, config FROM configs ORDER BY mission ASC"
+        "SELECT DISTINCT ON (mission) mission, version, config FROM configs ORDER BY mission ASC, version DESC"
       )
       .then(([results]) => {
         res.send({ status: "success", missions: results });
@@ -776,21 +884,35 @@ if (fullAccess)
 if (fullAccess) router.post("/rename", function (req, res, next) {});
 
 if (fullAccess)
-  router.post("/destroy", function (req, res, next) {
+  router.post("/destroy", checkMissionPermission, function (req, res, next) {
+    const missionName = req.body.mission;
+    if (!missionName || !/^[A-Za-z0-9_ -]+$/.test(missionName)) {
+      logger("error", "Invalid mission name in destroy request.", req.originalUrl, req);
+      res.send({ status: "failure", message: "Invalid mission name." });
+      return;
+    }
+    const missionsBase = path.resolve("./Missions");
+    const resolvedDir = path.resolve("./Missions/" + missionName);
+    if (!resolvedDir.startsWith(missionsBase + path.sep) && resolvedDir !== missionsBase) {
+      logger("error", "Path traversal attempt in destroy request.", req.originalUrl, req);
+      res.send({ status: "failure", message: "Invalid mission name." });
+      return;
+    }
+
     Config.destroy({
       where: {
-        mission: req.body.mission,
+        mission: missionName,
       },
     })
       .then((mission) => {
         logger(
           "info",
-          "Deleted Mission: " + req.body.mission,
+          "Deleted Mission: " + missionName,
           req.originalUrl,
           req
         );
 
-        const dir = "./Missions/" + req.body.mission;
+        const dir = "./Missions/" + missionName;
         if (fs.existsSync(dir)) {
           fs.rename(dir, dir + "_deleted_", (err) => {
             if (err)
@@ -798,33 +920,33 @@ if (fullAccess)
                 status: "success",
                 message:
                   "Successfully Deleted Mission: " +
-                  req.body.mission +
+                  missionName +
                   " but couldn't rename its Missions directory.",
               });
             else
               res.send({
                 status: "success",
-                message: "Successfully Deleted Mission: " + req.body.mission,
+                message: "Successfully Deleted Mission: " + missionName,
               });
           });
         } else {
           res.send({
             status: "success",
-            message: "Successfully Deleted Mission: " + req.body.mission,
+            message: "Successfully Deleted Mission: " + missionName,
           });
         }
       })
       .catch((err) => {
         logger(
           "error",
-          "Failed to delete mission: " + req.body.mission,
+          "Failed to delete mission: " + missionName,
           req.originalUrl,
           req,
           err
         );
         res.send({
           status: "failure",
-          message: "Failed to delete mission " + req.body.mission + ".",
+          message: "Failed to delete mission " + missionName + ".",
         });
         return null;
       });
@@ -1537,6 +1659,75 @@ function getGeneralOptions(req, res, next, cb) {
 }
 router.get("/getGeneralOptions", function (req, res, next) {
   getGeneralOptions(req, res, next);
+});
+
+// Reference Mission: Save current config back to blueprints template
+router.post("/reference-mission/save-to-base", checkMissionPermission, function (req, res, next) {
+  const mission = req.body.mission;
+
+  // Only allow for Reference-Mission mission
+  if (mission !== "Reference-Mission") {
+    return res.send({
+      status: "failure",
+      message: "This endpoint is only available for Reference-Mission mission.",
+    });
+  }
+
+  // Only allow in development mode
+  if (process.env.NODE_ENV !== "development") {
+    return res.send({
+      status: "failure",
+      message: "This endpoint is only available in development mode.",
+    });
+  }
+
+  // Get current working config
+  Config.findOne({
+    where: {
+      mission: mission,
+    },
+    order: [["id", "DESC"]],
+  })
+    .then((missionConfig) => {
+      if (!missionConfig) {
+        return res.send({
+          status: "failure",
+          message: "Reference-Mission mission not found.",
+        });
+      }
+
+      const config = missionConfig.config;
+      const basePath = "./blueprints/Missions/Reference-Mission/config.reference-mission.json";
+
+      // Write config to base template location
+      fs.writeFile(
+        basePath,
+        JSON.stringify(config, null, 2),
+        "utf8",
+        (err) => {
+          if (err) {
+            logger("error", "Failed to save Reference-Mission config to base template.", req.originalUrl, req, err);
+            return res.send({
+              status: "failure",
+              message: "Failed to save config to base template.",
+            });
+          }
+
+          logger("info", "Reference-Mission config saved to base template.", req.originalUrl, req);
+          res.send({
+            status: "success",
+            message: "Config saved to blueprints/Missions/Reference-Mission/config.reference-mission.json",
+          });
+        }
+      );
+    })
+    .catch((err) => {
+      logger("error", "Failed to retrieve Reference-Mission config.", req.originalUrl, req, err);
+      res.send({
+        status: "failure",
+        message: "Failed to retrieve config.",
+      });
+    });
 });
 
 module.exports = router;

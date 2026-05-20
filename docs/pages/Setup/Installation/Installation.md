@@ -71,7 +71,6 @@ Run: `docker-compose up -d`
 ### First Time UI Setup
 
 1. Setup the admin account:
-
    - In your browser, navigate to `http://localhost:8888/configure`
    - Sign up for an Administrator account (The Administrator account is always the first user in the database and you are only prompted to create an Administrator account if there are no other users)
 
@@ -89,7 +88,7 @@ See the [configuration documentation](https://nasa-ammos.github.io/MMGIS/configu
 
 ### System Requirements
 
-1. Install the latest version of [Node.js v20.11.1+](https://nodejs.org/en/download/).
+1. Install the latest version of [Node.js v22.20.0+](https://nodejs.org/en/download/).
 
 1. Install [PostgreSQL v16+](https://www.enterprisedb.com/downloads/postgres-postgresql-downloads). Detailed [install instructions](https://www.postgresqltutorial.com/postgresql-getting-started/) for all platforms.
 1. Install [PostGIS 3+](https://postgis.net/install/). From the above install, you can use the 'Application Stack Builder' to install PostGIS or the default [PostGIS install instructions](https://postgis.net/install/) for all platforms.
@@ -112,6 +111,7 @@ See the [configuration documentation](https://nasa-ammos.github.io/MMGIS/configu
       ```
       micromamba env create -y --name mmgis --file=python-environment.yml
       ```
+
       - If you encounter an error like: `..\mamba\condabin\micromamba"' is not recognized as an internal or external command, operable program or batch file.`, then copy the `mamba.bat` file in that directory to `micromamba.bat`
    1. Confirm the installation and initialization went well with:
       ```
@@ -121,6 +121,7 @@ See the [configuration documentation](https://nasa-ammos.github.io/MMGIS/configu
       ```
       micromamba activate mmgis
       ```
+   1. If any tool, component, or backend plugin declares Python dependencies in its `config.json`, install them now (see the [Setup steps](#setup) below for the exact commands). This is only needed for plugin-declared deps — the core `python-environment.yml` packages are already installed by the `env create` step above.
    #### Legacy (without micromamba):
    - GDAL [3.4+](https://gdal.org/download.html) with Python bindings (Windows users may find [these](https://github.com/cgohlke/geospatial-wheels/releases) helpful)
    - Python [>=3.10 and <3.13](https://www.python.org/downloads/)
@@ -165,12 +166,23 @@ See the [configuration documentation](https://nasa-ammos.github.io/MMGIS/configu
 
 1. Run `micromamba activate mmgis` or `python -m pip install -r python-requirements.txt` (if not using python environments)
 
+1. If any plugin declares Python dependencies, install them on top of the activated environment. `npm run build` (step 5 above) writes `plugin-python-requirements.txt` and `plugin-conda-deps.txt` at the repo root — install whichever side(s) are non-empty:
+
+   ```
+   # pip-side plugin deps
+   micromamba run -n mmgis pip install -r plugin-python-requirements.txt
+
+   # conda-side plugin deps (only if any plugin declares them)
+   micromamba install -n mmgis --file plugin-conda-deps.txt
+   ```
+
+   Plugin **npm** deps are installed automatically by `npm install` via a `postinstall` hook, so no separate command is needed for those. Re-run the two commands above after pulling new plugins or editing an existing plugin's Python deps. The Dockerfile already installs the pip-side plugin deps automatically, so this step only applies to non-Docker installs.
+
 1. If using adjacent-servers (titiler, stac, ...) make `.env` files from the samples within the `/adjacent-servers/{servers}/` directory.
 
 1. Run `npm run start:prod`
 
 1. Setup the admin account:
-
    - In your browser, navigate to `http://localhost:8888/configure`
    - Sign up for an Administrator account (The Administrator account is always the first user in the database and you are only prompted to create an Administrator account if there are no other users)
 

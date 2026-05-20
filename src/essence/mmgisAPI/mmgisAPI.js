@@ -1,9 +1,9 @@
 import L_ from '../Basics/Layers_/Layers_'
 import F_ from '../Basics/Formulae_/Formulae_'
 import ToolController_ from '../Basics/ToolController_/ToolController_'
-import QueryURL from '../Ancillary/QueryURL'
+import QueryURL from '../services/QueryURL'
 import TimeControl from '../Basics/TimeControl_/TimeControl'
-import Login from '../Ancillary/Login/Login'
+import Login from '../Basics/UserInterface_/components/Login/Login'
 import LegendTool from '../Tools/Legend/LegendTool.js'
 
 import $ from 'jquery'
@@ -546,7 +546,10 @@ var mmgisAPI = {
      * @param {boolean} - Whether to turn the TimeUI on or off. If true, makes visible.
      * @returns {boolean} - Whether the TimeUI is now on or off
      */
-    toggleTimeUI: TimeControl.toggleTimeUI,
+    toggleTimeUI: function (isOn) {
+        const Coordinates = require('../Basics/UserInterface_/components/Coordinates/Coordinates').default
+        Coordinates.toggleTimeUI(isOn)
+    },
 
     /**
      * This function sets the global time properties for all of MMGIS.
@@ -595,8 +598,13 @@ var mmgisAPI = {
      */
     getLayerEndTime: TimeControl.getLayerEndTime,
 
-    /** reloadTimeLayers will reload every time enabled layer
-     * @returns {array} - A list of layers that were reloaded
+    /** reloadTimeLayers will reload every time-enabled layer.
+     * Now async: awaits every per-layer reload (via Promise.allSettled)
+     * before resolving, so the active-feature restoration and follow-pan
+     * logic run after layers are actually refreshed.
+     * @returns {Promise<string[]>} - Resolves to a list of layer names
+     *   that were reloaded. Callers must await the returned promise to
+     *   access the array.
      */
     reloadTimeLayers: TimeControl.reloadTimeLayers,
 
@@ -605,6 +613,39 @@ var mmgisAPI = {
      * @returns {boolean} - Whether the layer was successfully reloaded
      */
     reloadLayer: TimeControl.reloadLayer,
+
+    /** reloadLayers will reload multiple time-enabled layers concurrently.
+     * Each layer is reloaded via TimeControl.reloadLayer() and the returned
+     * array preserves the same order as the input layerNames. Uses
+     * Promise.allSettled internally so a single failing layer reload
+     * does not reject the whole batch — the failing entry is reported as
+     * false in the returned array.
+     * @param {string[]} layerNames - Array of layer name strings (or UUIDs).
+     * @param {boolean} [evenIfOff] - Reload layers even if they are toggled off.
+     * @param {boolean} [evenIfControlled] - Reload layers even if they are controlled.
+     * @param {boolean} [forceRequery] - Force a requery of the layer data.
+     * @param {boolean} [skipOrderedBringToFront] - Skip ordered bring-to-front after reload.
+     * @returns {Promise<boolean[]>} - Per-layer reload results in input order;
+     *   each entry is the truthy return value from TimeControl.reloadLayer()
+     *   for successful reloads, or false for layers that threw / rejected.
+     */
+    reloadLayers: async function (layerNames, evenIfOff, evenIfControlled, forceRequery, skipOrderedBringToFront) {
+        if (!Array.isArray(layerNames)) return []
+        const settled = await Promise.allSettled(
+            layerNames.map((name) =>
+                TimeControl.reloadLayer(
+                    name,
+                    evenIfOff,
+                    evenIfControlled,
+                    forceRequery,
+                    skipOrderedBringToFront
+                )
+            )
+        )
+        return settled.map((r) =>
+            r.status === 'fulfilled' ? r.value : false
+        )
+    },
 
     /** Sets layer UUIDs and layer Names to UUIDs
      * @param {string} [uuid]

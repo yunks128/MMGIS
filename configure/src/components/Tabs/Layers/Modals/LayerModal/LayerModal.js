@@ -37,6 +37,7 @@ import useMediaQuery from "@mui/material/useMediaQuery";
 
 import Maker from "../../../../../core/Maker";
 
+import threedtilesConfig from "../../../../../metaconfigs/layer-3dtiles-config.json";
 import dataConfig from "../../../../../metaconfigs/layer-data-config.json";
 import headerConfig from "../../../../../metaconfigs/layer-header-config.json";
 import modelConfig from "../../../../../metaconfigs/layer-model-config.json";
@@ -166,6 +167,10 @@ const LayerModal = (props) => {
 
   let config = {};
   switch (layer.type) {
+    case "3dtiles":
+      config = threedtilesConfig;
+      break;
+
     case "data":
       config = dataConfig;
       break;
@@ -277,6 +282,20 @@ const LayerModal = (props) => {
               });
             });
           });
+
+          // Filter empty strings from any indexed text array fields
+          const filterEmptyStrings = (obj) => {
+            Object.keys(obj).forEach((key) => {
+              const val = obj[key];
+              if (Array.isArray(val)) {
+                obj[key] = val.filter((v) => v != null && v !== "");
+                if (obj[key].length === 0) delete obj[key];
+              } else if (val != null && typeof val === "object") {
+                filterEmptyStrings(val);
+              }
+            });
+          };
+          filterEmptyStrings(completedLayer);
 
           // Clear and copy while maintaining reference
           Object.keys(l).forEach((key) => {

@@ -5,11 +5,11 @@ import F_ from '../../Formulae_/Formulae_'
 import L_ from '../../Layers_/Layers_'
 import Map_ from '../../Map_/Map_'
 
-import LocalFilterer from '../../../Ancillary/LocalFilterer'
+import LocalFilterer from '../../../services/LocalFilterer'
 import ESFilterer from './ESFilterer'
 import GeodatasetFilterer from './GeodatasetFilterer'
 
-import Help from '../../../Ancillary/Help'
+import Help from '../../UserInterface_/components/Help/Help'
 import Dropy from '../../../../external/Dropy/dropy'
 import { circle } from '@turf/turf'
 
@@ -59,7 +59,8 @@ const Filtering = {
                     geojson: null,
                 }
 
-                Filtering.submit(layerName)
+                // Note: Initial filters will be applied when the layer is first turned on
+                // See L_.toggleLayer() for the application logic
             }
         })
     },

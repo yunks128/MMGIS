@@ -1,6 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 const sharp = require("sharp");
+const logger = require("../API/logger");
 
 const rootDir = `${__dirname}/..`;
 const rootDirMissions = `${rootDir}/Missions`;
@@ -25,7 +26,7 @@ async function compositeImageUrls(urls) {
       .composite(
         urls.map((url) => {
           return { input: `${rootDirMissions}${url}` };
-        })
+        }),
       )
       .png()
       .toBuffer();
@@ -37,16 +38,21 @@ async function compositeImageUrls(urls) {
 
 async function onlyExistingFilepaths(paths) {
   const filePromises = [];
-  paths.forEach((path) => {
+  paths.forEach((filePath) => {
     filePromises.push(
       new Promise(async (resolve, reject) => {
         try {
-          await fs.promises.access(`${rootDirMissions}${path}`);
-          resolve(path);
+          const fullPath = path.resolve(`${rootDirMissions}${filePath}`);
+          if (!fullPath.replace(/\\/g, '/').startsWith(path.resolve(rootDirMissions).replace(/\\/g, '/') + '/')) {
+            resolve(false);
+            return;
+          }
+          await fs.promises.access(fullPath);
+          resolve(filePath);
         } catch (err) {
           resolve(false);
         }
-      })
+      }),
     );
   });
   const filesExist = await Promise.all(filePromises).catch((err) => {});
@@ -103,7 +109,7 @@ async function sendImage(req, res, next, relUrlSplit) {
       relUrlSplit[1],
       req.query.time,
       req.query.starttime,
-      true
+      true,
     );
 
     compositeUrls = await onlyExistingFilepaths(compositeUrls);
@@ -128,7 +134,7 @@ async function sendImage(req, res, next, relUrlSplit) {
       relUrlSplit[0],
       relUrlSplit[1],
       req.query.time,
-      req.query.starttime
+      req.query.starttime,
     );
     if (!newUrl) res.sendStatus(404);
     else {
@@ -138,17 +144,37 @@ async function sendImage(req, res, next, relUrlSplit) {
   }
 }
 
-function isPathInsideRoot(logicalRootDirName, targetPath) {
-  const resolvedTarget = path.resolve(targetPath);
-  const pathParts = resolvedTarget.split(path.sep);
+function isPathInsideRoot(logicalRootDirName, targetPath, rootPath = "") {
+  // Security: Validate path is inside the actual intended root directory
+  // Previous implementation was vulnerable to attacks using fake "Missions" directories
 
-  const rootIndex = pathParts.indexOf(logicalRootDirName);
-  if (rootIndex === -1) return false;
+  // Construct the actual allowed base directory
+  const allowedBase = path.resolve(rootDir, logicalRootDirName);
 
-  const resolvedRoot =
-    pathParts.slice(0, rootIndex + 1).join(path.sep) + path.sep;
+  // Strip ROOT_PATH prefix if present (for subpath deployments)
+  let processedPath = targetPath;
+  if (rootPath && targetPath.startsWith(rootPath)) {
+    processedPath = targetPath.substring(rootPath.length);
+  }
 
-  return resolvedTarget.startsWith(resolvedRoot);
+  // Strip leading slash to treat as relative path (URL paths start with /)
+  const relativePath = processedPath.startsWith("/")
+    ? processedPath.substring(1)
+    : processedPath;
+
+  // Resolve the target path relative to rootDir
+  const resolvedTarget = path.resolve(rootDir, relativePath);
+
+  // Normalize paths for cross-platform comparison (handle Windows/Unix differences)
+  const normalizedTarget = resolvedTarget.replace(/\\/g, "/");
+  const normalizedBase = allowedBase.replace(/\\/g, "/");
+
+  // Ensure the resolved path is actually inside the allowed directory
+  // Check both with trailing slash (for subdirectories) and exact match (for the directory itself)
+  return (
+    normalizedTarget.startsWith(normalizedBase + "/") ||
+    normalizedTarget === normalizedBase
+  );
 }
 
 const middleware = {
@@ -159,10 +185,20 @@ const middleware = {
 
       // Validate URL starts with /Missions to prevent path traversal
       if (!originalUrl.startsWith(`${ROOT_PATH}/Missions`)) {
+        logger(
+          "warn",
+          `Missions middleware blocked request: URL does not start with expected prefix (ROOT_PATH: "${ROOT_PATH}", URL: "${originalUrl}")`,
+          "middleware.missions",
+        );
         return res.sendStatus(404);
       }
       // Additional validation: ensure no path traversal sequences
-      if (!isPathInsideRoot("Missions", originalUrl)) {
+      if (!isPathInsideRoot("Missions", originalUrl, ROOT_PATH)) {
+        logger(
+          "warn",
+          `Missions middleware blocked request: Path traversal check failed (ROOT_PATH: "${ROOT_PATH}", URL: "${originalUrl}")`,
+          "middleware.missions",
+        );
         return res.sendStatus(404);
       }
 
@@ -197,7 +233,7 @@ const middleware = {
               } else {
                 res.sendStatus(404);
               }
-            }
+            },
           );
         } else {
           sendImage(req, res, next, relUrlSplit);

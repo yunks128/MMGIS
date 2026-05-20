@@ -1,5 +1,6 @@
 const express = require("express");
 const logger = require("../../../logger");
+const Utils = require("../../../utils.js");
 const Sequelize = require("sequelize");
 const { sequelize } = require("../../../connection");
 const fhistories = require("../models/filehistories");
@@ -97,10 +98,11 @@ router.post("/aggregations", function (req, res, next) {
           }
 
           if (bestHistory.length === 0) {
-            return res.send({
+            res.send({
               status: "success",
               aggregations: {},
             });
+            return Promise.resolve(null); // Stop the promise chain
           }
 
           // Build query for sampling features
@@ -117,13 +119,13 @@ router.post("/aggregations", function (req, res, next) {
           const maxy = req.body.maxy;
 
           if (minx != null && miny != null && maxx != null && maxy != null) {
-            query += ` AND ST_Intersects(ST_MakeEnvelope(${parseFloat(minx)}, ${parseFloat(miny)}, ${parseFloat(maxx)}, ${parseFloat(maxy)}, 4326), geom)`;
+            query += ` AND ST_Intersects(ST_MakeEnvelope(${Utils.forceAlphaNumUnder(parseFloat(minx))}, ${Utils.forceAlphaNumUnder(parseFloat(miny))}, ${Utils.forceAlphaNumUnder(parseFloat(maxx))}, ${Utils.forceAlphaNumUnder(parseFloat(maxy))}, 4326), geom)`;
           }
 
           // Optional: Add temporal filter
           const startTime = req.body.startTime;
           const endTime = req.body.endTime;
-          const timeProp = req.body.timeProp || "time";
+          const timeProp = Utils.forceAlphaNumUnder(req.body.timeProp || "time");
 
           if (startTime != null && endTime != null) {
             // Note: This is a simplified temporal filter
@@ -141,7 +143,13 @@ router.post("/aggregations", function (req, res, next) {
             },
           });
         })
-        .then(([features]) => {
+        .then((result) => {
+          // If result is null, we already sent a response (empty history case)
+          if (result === null) {
+            return;
+          }
+
+          const [features] = result;
           // Build aggregations from sampled features
           const aggregations = {
             "geometry.type": {

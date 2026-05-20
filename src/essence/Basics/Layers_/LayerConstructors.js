@@ -7,143 +7,20 @@ import F_ from '../Formulae_/Formulae_'
 import L_ from '../Layers_/Layers_'
 import LayerGeologic from './LayerGeologic/LayerGeologic'
 import { parseExtendedGeoJSON, getCoordProperties } from './ExtendedGeoJSON'
+import {
+    interpolateColor,
+    interpolateMultipleColors,
+    hexToRgb,
+    parseRgb,
+    parseCSSColor,
+    escapeHtml,
+    closestPointOnSegment,
+} from './gradientUtils'
 
 import { centroid } from '@turf/turf'
 
 let L = window.L
 
-// Helper function to interpolate between two colors using RGB
-function interpolateColor(color1, color2, factor) {
-    if (!color1 || !color2) return color1 || color2
-
-    // Ensure factor is between 0 and 1
-    factor = Math.max(0, Math.min(1, factor))
-
-    // Convert colors to RGB if they're hex
-    const rgb1 = hexToRgb(color1) || parseRgb(color1) || parseCSSColor(color1)
-    const rgb2 = hexToRgb(color2) || parseRgb(color2) || parseCSSColor(color2)
-
-    if (!rgb1 || !rgb2) return color1 // Fallback if color parsing fails
-
-    // Interpolate each RGB component
-    const r = Math.round(rgb1.r + (rgb2.r - rgb1.r) * factor)
-    const g = Math.round(rgb1.g + (rgb2.g - rgb1.g) * factor)
-    const b = Math.round(rgb1.b + (rgb2.b - rgb1.b) * factor)
-
-    return `rgb(${r}, ${g}, ${b})`
-}
-
-// Enhanced function to interpolate between multiple colors using color stops
-function interpolateMultipleColors(colorStops, value, minValue, maxValue) {
-    if (!colorStops || colorStops.length === 0) return null
-    if (colorStops.length === 1) return colorStops[0].color
-
-    // Normalize the value to 0-1 range
-    const normalizedValue =
-        maxValue === minValue ? 0 : (value - minValue) / (maxValue - minValue)
-
-    // Clamp the normalized value
-    const clampedValue = Math.max(0, Math.min(1, normalizedValue))
-
-    // If we're at the extremes, return the boundary colors
-    if (clampedValue === 0) return colorStops[0].color
-    if (clampedValue === 1) return colorStops[colorStops.length - 1].color
-
-    // Find the two color stops that bracket our value
-    for (let i = 0; i < colorStops.length - 1; i++) {
-        const currentStop = colorStops[i]
-        const nextStop = colorStops[i + 1]
-
-        if (
-            clampedValue >= currentStop.position &&
-            clampedValue <= nextStop.position
-        ) {
-            // Calculate the local factor between these two stops
-            const stopRange = nextStop.position - currentStop.position
-            const localFactor =
-                stopRange === 0
-                    ? 0
-                    : (clampedValue - currentStop.position) / stopRange
-
-            // Interpolate between the two colors
-            return interpolateColor(
-                currentStop.color,
-                nextStop.color,
-                localFactor
-            )
-        }
-    }
-
-    // Fallback (shouldn't reach here)
-    return colorStops[colorStops.length - 1].color
-}
-
-// Helper function to convert hex color to RGB
-function hexToRgb(hex) {
-    if (!hex || typeof hex !== 'string') return null
-
-    // Remove # if present
-    hex = hex.replace('#', '')
-
-    // Handle 3-character hex
-    if (hex.length === 3) {
-        hex = hex
-            .split('')
-            .map((char) => char + char)
-            .join('')
-    }
-
-    if (hex.length !== 6) return null
-
-    const r = parseInt(hex.substr(0, 2), 16)
-    const g = parseInt(hex.substr(2, 2), 16)
-    const b = parseInt(hex.substr(4, 2), 16)
-
-    return isNaN(r) || isNaN(g) || isNaN(b) ? null : { r, g, b }
-}
-
-// Helper function to parse rgb() color strings
-function parseRgb(color) {
-    if (!color || typeof color !== 'string') return null
-
-    const match = color.match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/)
-    if (!match) return null
-
-    return {
-        r: parseInt(match[1]),
-        g: parseInt(match[2]),
-        b: parseInt(match[3]),
-    }
-}
-
-// Helper function to parse CSS color strings to RGB using browser's built-in capability
-function parseCSSColor(color) {
-    if (!color || typeof color !== 'string') return null
-
-    // Use a temporary element to parse the color
-    const tempElem = document.createElement('div')
-    tempElem.style.color = color
-
-    // Append to body temporarily to get computed style
-    document.body.appendChild(tempElem)
-    const computedColor = window.getComputedStyle(tempElem).color
-    document.body.removeChild(tempElem)
-
-    // If the browser couldn't parse it, computed color will be empty
-    if (!computedColor || computedColor === '') return null
-
-    // Try to parse rgb() or rgba() format
-    const rgbMatch = computedColor.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/)
-    if (rgbMatch) {
-        return {
-            r: parseInt(rgbMatch[1]),
-            g: parseInt(rgbMatch[2]),
-            b: parseInt(rgbMatch[3]),
-        }
-    }
-
-    return null
-}
 
 const tooltipProto = L.Tooltip.prototype
 const tooltipProto_setPosition = tooltipProto._setPosition
@@ -200,8 +77,14 @@ export const constructVectorLayer = (
     if (layerObj.style.radiusProp != null && layerObj.style.radiusProp !== '')
         rad = `prop:${layerObj.style.radiusProp}`
 
+    // Snapshot the original style so it can be restored on every feature call
+    const _originalStyle = layerObj.style
+
     let leafletLayerObject = {
         style: function (feature, preferredStyle) {
+            // Restore to original before applying per-feature overrides so
+            // mutations from a previous feature don't bleed into this one
+            layerObj.style = Object.assign({}, _originalStyle)
             if (preferredStyle) {
                 col = preferredStyle.color != null ? preferredStyle.color : col
                 opa =
@@ -519,6 +402,9 @@ export const constructVectorLayer = (
                         : 'none',
                     Map_.map
                 )
+            } else {
+                // Clear fillPattern if feature doesn't have a geologic pattern
+                layerObj.style.fillPattern = null
             }
             return layerObj.style
         },
@@ -1019,8 +905,8 @@ const labels = (geojson, layerObj, leafletLayerObject, layer, sublayers) => {
             }
             leafletLayer.eachLayer((l) => {
                 if (
-                    !l.feature.properties.arrow === true &&
-                    !l.feature.properties.annotation === true
+                    l.feature.properties.arrow !== true &&
+                    l.feature.properties.annotation !== true
                 ) {
                     dropdownProps.dropdown = Object.keys(l.feature.properties)
                     dropdownProps.dropdownValue =
@@ -1036,6 +922,19 @@ const labels = (geojson, layerObj, leafletLayerObject, layer, sublayers) => {
                             (layerObj.style?.weight || 0) * 2
 
                     customOptions.pointOffset[0] = xOffset
+
+                    // For lines and polygons, anchor tooltip to first coordinate
+                    if (l.feature?.geometry?.type === 'LineString' ||
+                        l.feature?.geometry?.type === 'Polygon' ||
+                        l.feature?.geometry?.type === 'MultiLineString' ||
+                        l.feature?.geometry?.type === 'MultiPolygon') {
+                        // Override getCenter to return first coordinate
+                        l._labelAnchorLatLng = L_.getFirstCoordinate(l.feature.geometry)
+                        l.getCenter = function() {
+                            return this._labelAnchorLatLng
+                        }
+                    }
+
                     if (labelsVar.initialVisibility === true)
                         l.bindTooltip(
                             `<div class='mmgisFeatureLabelContent'>${value}</div>`,
@@ -1080,8 +979,8 @@ const labels = (geojson, layerObj, leafletLayerObject, layer, sublayers) => {
             const tooltipLayersOn = (leafletLayer, subname) => {
                 leafletLayer.eachLayer((l) => {
                     if (
-                        !l.feature.properties.arrow === true &&
-                        !l.feature.properties.annotation === true
+                        l.feature.properties.arrow !== true &&
+                        l.feature.properties.annotation !== true
                     ) {
                         const value = l.feature.properties[layer.dropdownValue]
                         const content = `<div class='mmgisFeatureLabelContent'>${value}</div>`
@@ -1094,6 +993,19 @@ const labels = (geojson, layerObj, leafletLayerObject, layer, sublayers) => {
                                     (layerObj.style?.weight || 0) * 2
 
                             customOptions.pointOffset[0] = xOffset
+
+                            // For lines and polygons, anchor tooltip to first coordinate
+                            if (l.feature?.geometry?.type === 'LineString' ||
+                                l.feature?.geometry?.type === 'Polygon' ||
+                                l.feature?.geometry?.type === 'MultiLineString' ||
+                                l.feature?.geometry?.type === 'MultiPolygon') {
+                                // Override getCenter to return first coordinate
+                                l._labelAnchorLatLng = L_.getFirstCoordinate(l.feature.geometry)
+                                l.getCenter = function() {
+                                    return this._labelAnchorLatLng
+                                }
+                            }
+
                             l.bindTooltip(content, customOptions)
                         }
                         l.openTooltip()
@@ -1103,8 +1015,8 @@ const labels = (geojson, layerObj, leafletLayerObject, layer, sublayers) => {
                     const globeLabels = []
                     leafletLayer.eachLayer((l) => {
                         if (
-                            !l.feature.properties.arrow === true &&
-                            !l.feature.properties.annotation === true &&
+                            l.feature.properties.arrow !== true &&
+                            l.feature.properties.annotation !== true &&
                             l._tooltip?._latlng?.lng != null
                         ) {
                             const value =
@@ -1173,7 +1085,15 @@ const labels = (geojson, layerObj, leafletLayerObject, layer, sublayers) => {
                 )
         }
 
-        if (labelsVar.initialVisibility === true) layer.on(true)
+        // Only show labels initially if they're within zoom range
+        if (labelsVar.initialVisibility === true) {
+            const labelMinZoom = layerObj.minZoom != null ? layerObj.minZoom : 0
+            const labelMaxZoom = layerObj.maxZoom != null ? layerObj.maxZoom : 100
+            const currentZoom = L_.Map_.map ? L_.Map_.map.getZoom() : 0
+            if (F_.isInZoomRange(labelMinZoom, labelMaxZoom, currentZoom)) {
+                layer.on(true)
+            }
+        }
 
         layer.addDataEnhanced = function (geojson, layerName, subName) {
             this.addData(geojson)
@@ -1190,8 +1110,8 @@ const labels = (geojson, layerObj, leafletLayerObject, layer, sublayers) => {
             geojson: geojson,
             layer: layer,
             title: 'Feature Labels',
-            minZoom: 0,
-            maxZoom: 100,
+            minZoom: layerObj.minZoom != null ? layerObj.minZoom : 0,
+            maxZoom: layerObj.maxZoom != null ? layerObj.maxZoom : 100,
         }
     } else return false
 }
@@ -1369,8 +1289,8 @@ const pairings = (geojson, layerObj, leafletLayerObject) => {
             geojson: geojson,
             layer: layer,
             title: 'Feature Pairings',
-            minZoom: 0,
-            maxZoom: 100,
+            minZoom: layerObj.minZoom != null ? layerObj.minZoom : 0,
+            maxZoom: layerObj.maxZoom != null ? layerObj.maxZoom : 100,
         }
     } else {
         return false
@@ -1477,8 +1397,8 @@ const uncertaintyEllipses = (geojson, layerObj, leafletLayerObject) => {
             on: isOn,
             order: -9999,
             opacity: existingOpacity,
-            minZoom: 0,
-            maxZoom: 100,
+            minZoom: layerObj.minZoom != null ? layerObj.minZoom : 0,
+            maxZoom: layerObj.maxZoom != null ? layerObj.maxZoom : 100,
             geojson: {
                 type: 'FeatureCollection',
                 features: uncertaintyEllipseFeatures,
@@ -1593,16 +1513,35 @@ const imageOverlays = (geojson, layerObj, leafletLayerObject) => {
                         'variables.markerAttachments.image.path',
                         'public/images/rovers/PerseveranceTopDown.png'
                     )
-                    let imageSettings = {
-                        image: F_.getIn(
+                    const pathProp = F_.getIn(
+                        layerObj,
+                        'variables.markerAttachments.image.pathProp',
+                        null
+                    )
+
+                    // Figure out image path (same logic as model attachments)
+                    let imagePath = null
+                    if (!path && pathProp) {
+                        imagePath = F_.getIn(
                             feature.properties,
-                            F_.getIn(
-                                layerObj,
-                                'variables.markerAttachments.image.pathProp',
-                                path
-                            ),
-                            path
-                        ),
+                            pathProp,
+                            null
+                        )
+                    } else {
+                        imagePath = pathProp
+                            ? F_.getIn(feature.properties, pathProp, path)
+                            : path
+                    }
+                    // Prepend mission path for relative URLs (matches model attachment behavior)
+                    if (
+                        imagePath &&
+                        !F_.isUrlAbsolute(imagePath) &&
+                        !imagePath.startsWith('public')
+                    )
+                        imagePath = L_.missionPath + imagePath
+
+                    let imageSettings = {
+                        image: imagePath,
                         widthMeters: F_.getIn(
                             layerObj,
                             'variables.markerAttachments.image.widthMeters',
@@ -2102,7 +2041,283 @@ const pathGradient = (geojson, layerObj, leafletLayerObject) => {
                 })
             }
 
+            // ── Build spatial grid for 2D hover tooltip ──
+            // Uses O(N) construction with a coordinate→properties Map
+            // instead of the previous O(N²) per-vertex feature search that
+            // froze the browser with large (24K+) datasets.  A single
+            // mousemove handler replaces N individual circleMarkers.
+            const coordProps = pathGradientSettings.dropdownColorWithProp.length > 0
+                ? pathGradientSettings.dropdownColorWithProp
+                : [pathGradientSettings.colorWithProp]
+
+            // Pre-build coordinate→properties Map for O(1) lookup
+            const featurePropsByCoord = new Map()
+            geojson.features.forEach((feature) => {
+                if (pathGradientSettings.connectAllPoints &&
+                    feature.geometry.type.toLowerCase() === 'point') {
+                    const c = feature.geometry.coordinates
+                    featurePropsByCoord.set(`${c[1]},${c[0]}`, feature.properties)
+                } else if (!pathGradientSettings.connectAllPoints) {
+                    F_.coordinateDepthTraversal(
+                        feature.geometry.coordinates,
+                        (array) => {
+                            featurePropsByCoord.set(
+                                `${array[1]},${array[0]}`,
+                                getCoordProperties(geojson, feature, array)
+                            )
+                        }
+                    )
+                }
+            })
+
+            // Build spatial grid + hover segments array (O(N))
+            // Each entry is a line segment between two consecutive path vertices.
+            // Segments are registered in every grid cell their bounding box covers,
+            // so the mousemove handler can do point-to-segment projection rather
+            // than just nearest-vertex lookup — this makes the tooltip appear
+            // anywhere along the line, not only at recorded vertices.
+            const hoverGridRes = 0.001 // ~100m cells
+            const hoverGrid = {}
+            const hoverSegments = [] // { lng1, lat1, lng2, lat2, props, val1, val2 }
+
+            function _addHoverSegment(seg) {
+                const segIdx = hoverSegments.length
+                hoverSegments.push(seg)
+                // Register the segment at evenly-spaced sample points along its length,
+                // one sample every 2 grid cells.  The mousemove handler checks a 3×3
+                // neighbourhood, so any mouse position within 1 cell of a sample will
+                // find this segment — giving full coverage for segments up to ~2× the
+                // cap length.  This avoids the O(N × span²) cost of bounding-box
+                // registration while still covering hover anywhere on the line.
+                const gx1 = Math.floor(seg.lng1 / hoverGridRes)
+                const gy1 = Math.floor(seg.lat1 / hoverGridRes)
+                const gx2 = Math.floor(seg.lng2 / hoverGridRes)
+                const gy2 = Math.floor(seg.lat2 / hoverGridRes)
+                const span = Math.max(Math.abs(gx2 - gx1), Math.abs(gy2 - gy1))
+                // steps = number of intervals; sample every 2 cells, cap at 12
+                const steps = Math.min(12, Math.max(1, Math.ceil(span / 2)))
+                const seenCells = new Set()
+                for (let s = 0; s <= steps; s++) {
+                    const t = s / steps
+                    const gx = Math.floor((seg.lng1 + t * (seg.lng2 - seg.lng1)) / hoverGridRes)
+                    const gy = Math.floor((seg.lat1 + t * (seg.lat2 - seg.lat1)) / hoverGridRes)
+                    const key = `${gx},${gy}`
+                    if (seenCells.has(key)) continue
+                    seenCells.add(key)
+                    if (!hoverGrid[key]) hoverGrid[key] = []
+                    hoverGrid[key].push(segIdx)
+                }
+            }
+
+            if (pathGradientSettings.connectAllPoints) {
+                // connectAllPoints: paths is a flat array of [lat, lng, value] vertices
+                // connected in sequence — build segments between consecutive entries.
+                for (let i = 0; i < paths.length - 1; i++) {
+                    const p1 = paths[i], p2 = paths[i + 1]
+                    if (!Array.isArray(p1) || p1.length < 3) continue
+                    if (!Array.isArray(p2) || p2.length < 3) continue
+                    const [lat1, lng1, val1] = p1
+                    const [lat2, lng2, val2] = p2
+                    _addHoverSegment({
+                        lng1, lat1, lng2, lat2,
+                        props: featurePropsByCoord.get(`${lat1},${lng1}`),
+                        props2: featurePropsByCoord.get(`${lat2},${lng2}`),
+                        val1, val2,
+                    })
+                }
+            } else {
+                // Each path is an independent array of [lat, lng, value] vertices.
+                paths.forEach((path) => {
+                    if (!Array.isArray(path)) return
+                    for (let i = 0; i < path.length - 1; i++) {
+                        const p1 = path[i], p2 = path[i + 1]
+                        if (!Array.isArray(p1) || p1.length < 3) continue
+                        if (!Array.isArray(p2) || p2.length < 3) continue
+                        const [lat1, lng1, val1] = p1
+                        const [lat2, lng2, val2] = p2
+                        _addHoverSegment({
+                            lng1, lat1, lng2, lat2,
+                            props: featurePropsByCoord.get(`${lat1},${lng1}`),
+                            props2: featurePropsByCoord.get(`${lat2},${lng2}`),
+                            val1, val2,
+                        })
+                    }
+                })
+            }
+
             const layer = L.layerGroup(hotlines)
+
+            // Attach spatial-grid hover via onAdd/onRemove instead of
+            // creating N individual circleMarkers (avoids DOM bloat and
+            // rendering freeze with large datasets).
+            const _origOnAdd = L.LayerGroup.prototype.onAdd
+            const _origOnRemove = L.LayerGroup.prototype.onRemove
+
+            layer.onAdd = function (map) {
+                _origOnAdd.call(this, map)
+
+                // Inject dark-theme tooltip styles once
+                if (!document.getElementById('mmgisGradientTooltipStyles')) {
+                    const s = document.createElement('style')
+                    s.id = 'mmgisGradientTooltipStyles'
+                    s.textContent = `
+                        .mmgisGTip.leaflet-tooltip {
+                            background: var(--color-a);
+                            border: 1px solid var(--color-a1);
+                            border-radius: 4px;
+                            padding: 6px 10px;
+                            box-shadow: 0 2px 8px rgba(0,0,0,0.6);
+                            color: var(--color-a6);
+                        }
+                        .mmgisGTip.leaflet-tooltip-top::before {
+                            border-top-color: var(--color-a1);
+                        }
+                        .mmgisGTip table {
+                            border-collapse: collapse;
+                            font-size: 12px;
+                            font-family: monospace;
+                        }
+                        .mmgisGTip td { padding: 1px 0; white-space: nowrap; }
+                        .mmgisGTip td.gk {
+                            color: var(--color-c);
+                            text-align: left;
+                            padding-right: 16px;
+                            font-weight: bold;
+                        }
+                        .mmgisGTip td.gv {
+                            color: var(--color-a6);
+                            text-align: right;
+                        }
+                    `
+                    document.head.appendChild(s)
+                }
+
+                const tooltip = L.tooltip({
+                    direction: 'top',
+                    offset: [0, -8],
+                    className: 'mmgisGTip',
+                })
+                this._gradientTooltip = tooltip
+
+                // Highlight dot — shows the closest point on the segment
+                const highlightDot = L.circleMarker([0, 0], {
+                    radius: 6,
+                    color: '#000',
+                    weight: 2,
+                    fillColor: '#fff',
+                    fillOpacity: 1,
+                    interactive: false,
+                    pane: 'markerPane',
+                })
+                this._gradientHighlightDot = highlightDot
+
+                this._gradientHandleMove = (e) => {
+                    const { lat, lng } = e.latlng
+                    const gx = Math.floor(lng / hoverGridRes)
+                    const gy = Math.floor(lat / hoverGridRes)
+
+                    // Zoom-adaptive pick radius: ~15 screen pixels in degrees
+                    const bounds = map.getBounds()
+                    const mapH = map.getSize().y || 1
+                    const pickRadius =
+                        ((bounds.getNorth() - bounds.getSouth()) / mapH) * 15
+
+                    let bestDist = Infinity
+                    let bestSeg = null
+                    let bestT = 0
+                    const seen = new Set()
+
+                    for (let dx = -1; dx <= 1; dx++) {
+                        for (let dy = -1; dy <= 1; dy++) {
+                            const cell = hoverGrid[`${gx + dx},${gy + dy}`]
+                            if (!cell) continue
+                            for (let i = 0; i < cell.length; i++) {
+                                const segIdx = cell[i]
+                                if (seen.has(segIdx)) continue
+                                seen.add(segIdx)
+                                const seg = hoverSegments[segIdx]
+                                const { t, dist } = closestPointOnSegment(
+                                    lng, lat,
+                                    seg.lng1, seg.lat1,
+                                    seg.lng2, seg.lat2
+                                )
+                                if (dist < bestDist) {
+                                    bestDist = dist
+                                    bestSeg = seg
+                                    bestT = t
+                                }
+                            }
+                        }
+                    }
+
+                    if (bestSeg && bestDist < pickRadius) {
+                        // Use bestT to decide which vertex's properties
+                        // to show: near the start (t < 0.5) use start-
+                        // vertex props, near the end (t >= 0.5) use
+                        // end-vertex props.  This ensures hovering near
+                        // the last vertex of a path shows correct values.
+                        const props = bestT >= 0.5
+                            ? (bestSeg.props2 || bestSeg.props)
+                            : bestSeg.props
+                        const fallbackVal = bestT >= 0.5
+                            ? bestSeg.val2
+                            : bestSeg.val1
+                        let html = '<table>'
+                        coordProps.forEach((prop) => {
+                            const val = props
+                                ? F_.getIn(props, prop, '—')
+                                : fallbackVal
+                            const label = escapeHtml(
+                                prop.replace(/_/g, ' ')
+                                    .replace(/\b\w/g, (c) => c.toUpperCase())
+                            )
+                            html += `<tr><td class="gk">${label}</td><td class="gv">${escapeHtml(val)}</td></tr>`
+                        })
+                        html += '</table>'
+                        tooltip
+                            .setLatLng(e.latlng)
+                            .setContent(html)
+                        if (!tooltip._map) tooltip.addTo(map)
+
+                        // Move 2D highlight dot to closest point on the segment
+                        const closestLat =
+                            bestSeg.lat1 + bestT * (bestSeg.lat2 - bestSeg.lat1)
+                        const closestLng =
+                            bestSeg.lng1 + bestT * (bestSeg.lng2 - bestSeg.lng1)
+                        highlightDot.setLatLng([closestLat, closestLng])
+                        if (!highlightDot._map) highlightDot.addTo(map)
+                        // Mirror the hover dot in 3D
+                        L_.Globe_?.litho?.setGradientHoverPoint(closestLng, closestLat)
+                    } else {
+                        if (tooltip._map) map.removeLayer(tooltip)
+                        if (highlightDot._map) map.removeLayer(highlightDot)
+                        L_.Globe_?.litho?.clearGradientHoverPoint()
+                    }
+                }
+
+                this._gradientHandleOut = () => {
+                    if (tooltip._map) map.removeLayer(tooltip)
+                    if (highlightDot._map) map.removeLayer(highlightDot)
+                    L_.Globe_?.litho?.clearGradientHoverPoint()
+                }
+
+                map.on('mousemove', this._gradientHandleMove)
+                map.on('mouseout', this._gradientHandleOut)
+            }
+
+            layer.onRemove = function (map) {
+                if (this._gradientHandleMove)
+                    map.off('mousemove', this._gradientHandleMove)
+                if (this._gradientHandleOut)
+                    map.off('mouseout', this._gradientHandleOut)
+                if (this._gradientTooltip && this._gradientTooltip._map) {
+                    map.removeLayer(this._gradientTooltip)
+                }
+                if (this._gradientHighlightDot && this._gradientHighlightDot._map) {
+                    map.removeLayer(this._gradientHighlightDot)
+                }
+                _origOnRemove.call(this, map)
+            }
             layer.addDataEnhanced = function (
                 geojson,
                 layerName,
@@ -2131,6 +2346,28 @@ const pathGradient = (geojson, layerObj, leafletLayerObject) => {
                     Map_,
                     prop
                 )
+                // Rebuild 3D gradient with new property.
+                // removeLayer is cheap (scene.primitives.remove); defer the
+                // heavy addLayer geometry build to avoid blocking the UI thread.
+                if (l.cesiumLayerId && L_.Globe_ && L_.Globe_.litho) {
+                    L_.Globe_.litho.removeLayer(l.cesiumLayerId)
+                    l.cesiumLayerId = null
+                    const updatedOptions = {
+                        ...l.cesiumGradientOptions,
+                        gradientSettings: {
+                            ...l.cesiumGradientOptions.gradientSettings,
+                            colorWithProp: prop,
+                        },
+                    }
+                    l.cesiumGradientOptions = updatedOptions
+                    clearTimeout(l._cesiumRebuildTimer)
+                    l._cesiumRebuildTimer = setTimeout(() => {
+                        l.cesiumLayerId = L_.Globe_.litho.addLayer(
+                            'gradient_polyline',
+                            updatedOptions
+                        )
+                    }, 0)
+                }
             }
             layer.layerObj = layerObj
 
@@ -2145,6 +2382,40 @@ const pathGradient = (geojson, layerObj, leafletLayerObject) => {
             'variables.pathAttachments.gradient'
         )
 
+        const pathGradientSettings = {
+            colorWithProp: F_.getIn(
+                pathGradientVar,
+                'colorWithProp',
+                null
+            ),
+            dropdownColorWithProp: F_.getIn(
+                pathGradientVar,
+                'dropdownColorWithProp',
+                []
+            ),
+            colorRamp: F_.getIn(pathGradientVar, 'colorRamp', [
+                'lime',
+                'yellow',
+                'red',
+            ]),
+            weight: F_.getIn(pathGradientVar, 'weight', 4),
+            connectAllPoints: F_.getIn(
+                pathGradientVar,
+                'connectAllPoints',
+                false
+            ),
+        }
+        // Normalize: ensure colorWithProp is in the dropdown list (matches 2D behavior)
+        if (
+            pathGradientSettings.colorWithProp &&
+            !pathGradientSettings.dropdownColorWithProp.includes(
+                pathGradientSettings.colorWithProp
+            )
+        )
+            pathGradientSettings.dropdownColorWithProp.unshift(
+                pathGradientSettings.colorWithProp
+            )
+
         return {
             on:
                 pathGradientVar.initialVisibility != null
@@ -2153,6 +2424,12 @@ const pathGradient = (geojson, layerObj, leafletLayerObject) => {
             type: 'path_gradient',
             geojson: geojson,
             layer: layer,
+            cesiumGradientOptions: {
+                name: layerObj.name,
+                geojson: geojson,
+                gradientSettings: pathGradientSettings,
+                layerObj: layerObj,
+            },
             title: 'A colorful visualization of values along a path.\nPoint values from the specified feature property are min-max fit to a color ramp.',
         }
     } else return false

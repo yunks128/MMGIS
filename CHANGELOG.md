@@ -4,24 +4,170 @@
 
 _TBD_
 
+## 5.0.0
+
+_May 1, 2026_
+
+#### Summary
+
+This major release modernizes the MMGIS frontend by migrating core UI infrastructure from jQuery/Materialize to React 18 and Base UI. The separated tools system has been fully rewritten as React components. The Ancillary directory has been dissolved and its components reorganized. A comprehensive mobile UI overhaul improves toolbar layout, TimeUI integration, and responsive positioning. A configurable theme system with High Contrast support has been added. The internal test infrastructure (Test_ module) has been removed in favor of the Playwright-based E2E framework. The Cesium 3D globe link button has been restyled and repositioned. Various bug fixes address TimeControl, Legend, modal, tooltip, and z-index issues.
+
+### Compatibility
+
+- **Mission configurations: Fully backward compatible.** No changes are required to existing mission configuration JSON files. All existing config fields (`separatedTool`, `look.*`, tool definitions, layer definitions, etc.) continue to work as before. The removed `justification` field is silently ignored if still present. New optional fields (`look.theme`, `look.primarycolor`, `look.secondarycolor`, `look.tertiarycolor`, `look.accentcolor`, `look.hightlightcolor`) are additive and do not need to be set.
+- **JavaScript API (`window.mmgisAPI`): Fully backward compatible.** All documented public API functions remain unchanged. No migration needed for code using `mmgisAPI`.
+- **End users: No breaking changes.** The application UI has been modernized but all user-facing functionality is preserved or improved. No retraining or workflow changes are needed.
+
+### Migration Guide (Developers Only)
+
+The following breaking changes affect **developers who maintain custom tool plugins, component plugins, or code that imports internal MMGIS modules**. They do NOT affect mission operators, end users, or mission configurations.
+
+- **Breaking (Developers): Ancillary directory dissolved.** Components previously under `src/essence/Ancillary/` have been reorganized into nested locations under `src/essence/Basics/UserInterface_/components/`. Any custom plugin code importing from `Ancillary/` paths will need import path updates.
+- **Breaking (Developers): jQuery UI components replaced with React.** Modal, Tooltip, Toast, Help, ContextMenu, and Coordinates components are now React-based. Any custom plugin code relying on jQuery selectors (e.g., `$('.modal')`, `$('.tooltipped')`) or Materialize CSS classes for these components will need updating to use the new React component APIs or DOM IDs.
+- **Breaking (Developers): Separated tools system rewritten.** The separated/floating tools system is now React-based. Custom tools that used the old jQuery-based separated tools DOM API will need migration. The tool module interface (`make()`, `destroy()`, `initialize()`, `finalize()`) is unchanged — only the DOM container rendering has changed.
+- **Breaking (Developers): Test_ module removed.** The internal `Test_` module, `testModules`, and `DrawTool.test` have been removed. Use the Playwright-based E2E test framework (`tests/e2e/`) instead.
+
+#### Added
+
+- React 18 and Base UI as core frontend framework (PR #49)
+- Proper Toast notification component replacing ~69 ad-hoc CursorInfo toast calls
+- Configurable theme system with High Contrast theme via Configure page UI tab
+- Custom theme mode with `enableWhenField` support in Configure
+- `.knowledge/` directory with AI agent knowledge architecture (PR #52)
+- Legend empty state message when no legend items are present
+- Hover effect on MMGIS logo (subtle background highlight)
+- Per-layer fade control: time-enabled and shade/viewshed layers never fade
+- Selective tile fade: fade on pan/zoom, instant on refresh/reload
+
 #### Changed
 
-- Moved TimeControl from `Ancillary/` to `Basics/TimeControl_/` to reflect its role as core infrastructure (#835)
-  - TimeControl and TimeUI now located in `src/essence/Basics/TimeControl_/`
-  - Updated import paths across 19 files
-  - **Breaking change for external plugins**: Import path changed from `'Ancillary/TimeControl'` to `'Basics/TimeControl_/TimeControl'`
-- Moved admin login assets from `config/login/` to `public/` directory
-  - `adminlogin.js` and `adminlogin.css` now served from `/public`
+- Migrated Ancillary UI components (Modal, Tooltip, Toast, Help, ContextMenu, Coordinates) from jQuery/Materialize to React 18 + Base UI (PR #49)
+- Rewrote separated tools system from jQuery to React components (PR #51)
+- Dissolved `Ancillary/` folder and reorganized components into nested structure
+- Repositioned Viewer and Globe panel buttons to top-right
+- Moved Cesium link button to top-right with Leaflet zoom button styling (PR #55)
+- Anchored map logo to document.body to avoid CSS filter containing block issues (PR #56)
+- Reverted tooltips to tippy.js for consistency
+- Redesigned About modal
+- Removed dead CSS: deleted `tools.css`, cleaned ~600 lines from `mmgisUI.css` and `mmgis.css`
+- Removed `separatedTool/justification` config toggles (field silently ignored if present in existing configs)
+- Removed separated tools offset logic from `Globe_.js`
+- Updated docs to remove references to deleted test infrastructure (PR #57)
+
+#### Fixed
+
+- Mobile toolbar: 40px height, active button styling matching desktop, icon alignment (PR #50)
+- Mobile TimeUI: overflow, panel height, expanded rows, Invalid date, isMobile detection (PR #50)
+- Mobile topBar padding and hamburger menu positioning (PR #50)
+- Mobile topBarTitleName text wrapping via `white-space: nowrap` (PR #58)
+- Mobile scalebar/compass positioning at correct offset (PR #50)
+- Mobile hotkeys hidden on mobile devices (PR #50)
+- TimeUI dropdown z-index above tool panel
+- TimeUI `#toggleTimeUI` click handler, tippy tooltip, and active class restoration
+- TimeControl `.fina()` assignment operator used instead of comparison
+- Legend empty message scoped to content container via targetId
+- Legend duplicate ID issue
+- IdentifierTool deactivation icon ID reference in `separateFromMMWebGIS`
+- CurtainTool `destroy()` using undefined `ReactDOM.unmountComponentAtNode`
+- Modal blur persistence and race condition during fade-out
+- ContextMenu WKT null guard
+- Help.jsx fetch error handling and HTML sanitization with DOMPurify
+- CoordinatesDiv z-index
+- `topBarTitleName` padding override specificity
+- `toolPanelDrag` visibility when no tool is open
+- `mapToolBar` pointer events, login padding, default tool, About modal order
+- Session logout regression
+- `defaulttooldropdown` case handler in `Maker.js`
+- Circular import in `TimeUI.js`
+- `--color-a3` text contrast
+- StatusIndicator spacing and title attribute conflict with tippy tooltip
+- Tool headers fixed to 40px height
+- Various tool UI issues: ViewshedTool subheader, AnimationTool header, InfoTool close button
 
 #### Removed
 
-- Legacy jQuery/Materialize configure page and `/configure-legacy` route (#830)
-  - Removed entire `config/` directory (css, js, fonts, pre, login subdirectories)
-  - Removed `views/configure.pug` template
-  - Use `/configure` for React-based configure interface
-- `database/` directory - Old Docker Postgres migration/upgrade scripts
-- `src/essence/Tools/_OLD/` directory (Distance, FileManager, Query, Search, Sketch tools)
-- `Dockerfile.legacy` (superseded by main Dockerfile)
+- Internal test infrastructure: `Test_` module, `testModules`, `DrawTool.test` (PR #53)
+- `tools.css` and ~600 lines of dead CSS from `mmgisUI.css` and `mmgis.css`
+- `separatedTool/justification` configuration toggles
+- Separated tools offset logic from `Globe_.js`
+- Stale `setShowUserCard` call in `handleLogout`
+
+## 4.2.34
+
+_April 2, 2026_
+
+#### Summary
+
+This release introduces beta CesiumJS integration as an alternative 3D globe renderer, a new Plugin Components system for extensible UI behaviors, and a Playwright-based end-to-end testing framework. The DrawTool gains DynamicExtent for viewport-based feature loading and a new Point template type. AnimationTool receives multiple improvements and STAC URL fixes. TimeControl is promoted to core infrastructure under Basics. New API callbacks and events expand extensibility (newActiveFeature, layersToolHeaderStateChange, madeLegendTool, viewer_open). Mobile mode sees significant improvements including configurable initial zoom, layout fixes, and a responsive login page. Security hardening includes adjacent servers placed behind authentication, npm audit fixes, and multiple vulnerability patches. The codebase is cleaned up with D3 largely removed, legacy scripts and files pruned, and an improved Dockerfile. Two new open-source components are released: AnalysisTool and OperationsClock.
+
+#### Added
+
+- Beta CesiumJS integration as an alternative 3D globe renderer (#810)
+- Plugin Components system for lightweight, extensible UI behaviors (#849)
+- AnalysisTool and OperationsClock released as open-source components (#904)
+- Playwright end-to-end testing framework (#216)
+- DrawTool DynamicExtent for viewport-based feature loading (#852)
+- DrawTool Template for Point type (#843)
+- DrawTool endpoint support via long-term tokens (#841)
+- TiTiler layer support in Cesium Globe (#898)
+- External MMGIS STAC catalog linking (#863)
+- viewer_open as a new layer Kind (#855)
+- Configurable initial zoom for mobile mode (#866)
+- Latitude/Longitude option in coordinates display (#905)
+- Callback for layersToolHeaderStateChange (#846)
+- Callback for madeLegendTool (#858)
+- Additional newActiveFeature events (#845)
+- Font types as webpack assets (#874)
+- AGENTS.md and spec-kit for AI development (#828)
+- .gitattributes file (#901)
+
+#### Changed
+
+- Moved TimeControl from Ancillary/ to Basics/TimeControl\_/ to reflect its role as core infrastructure (#835)
+- Breaking change for external plugins: Import path changed from 'Ancillary/TimeControl' to 'Basics/TimeControl\_/TimeControl'
+- Removed D3 dependency (mostly) (#826)
+- Improved Dockerfile with multi-stage build and reduced image size (#868)
+- Upgraded all adjacent servers and sample ENVs (#897)
+- Updated time and timetype metaconfigurations (#891)
+- Removed redundant urlencoded middleware (#888)
+- AnimationTool improvements including playback and UI enhancements (#856)
+- Updated GitHub workflow: docker-build.yml (#917)
+- Updated README.md (#913)
+
+#### Fixed
+
+- LegendTool overflow (#848)
+- Viewer and globe splitter icons (#850)
+- Time and Refresh Interval enabled layers incorrectly set to layernotfound (#853)
+- AnimationTool STAC URLs (#860, #861, #867)
+- Return value for layersToolHeaderStateChange event (#862)
+- Bug in viewer_open kind (#865, #882)
+- titiler-pgstac performance issue (#870)
+- DynamicExtent + Threshold layers not properly updating (#871)
+- Multiple mobile mode layout and interaction issues (#875, #878)
+- Login page layout on smaller screens (#883)
+- Initial Start and End Time configuration parameters (#886)
+- Time Type = Local and Refresh Interval not working together (#889)
+- queryTilesetTimes not updating on layer toggles (#892)
+- DrawTool bugs: template field naming, not-null advanced filters (#895)
+- DrawTool Templated Point origin point getting stuck (#909)
+- updateClampedRasterForLayer is not a function error (#907)
+- Image loading in OpenSeadragon (#899)
+- Missions middleware (#914)
+- Hover Feature Label and Layer Tags wrongly assigned (#915)
+- Critical security vulnerabilities (#880, #884)
+
+#### Removed
+
+- Legacy jQuery/Materialize configure page and /configure-legacy route (#830)
+- database/ directory containing old Docker Postgres migration scripts (#830)
+- src/essence/Tools/\_OLD/ directory (#830)
+- Dockerfile.legacy (#830)
+
+#### Security
+
+- npm audit fix (unforced) (#832)
+- Adjacent servers placed behind authentication (#911)
 
 ## 4.1.0
 

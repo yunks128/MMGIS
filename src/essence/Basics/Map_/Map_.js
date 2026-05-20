@@ -6,18 +6,20 @@ import {
     constructVectorLayer,
     constructSublayers,
 } from '../Layers_/LayerConstructors'
+import { transformStacUrl } from '../Layers_/LayerUtils'
 import Filtering from '../Layers_/Filtering/Filtering'
 import Viewer_ from '../Viewer_/Viewer_'
 import Globe_ from '../Globe_/Globe_'
 import ToolController_ from '../ToolController_/ToolController_'
-import CursorInfo from '../../Ancillary/CursorInfo'
-import Description from '../../Ancillary/Description'
-import QueryURL from '../../Ancillary/QueryURL'
+import CursorInfo from '../UserInterface_/components/CursorInfo/CursorInfo'
+import Description from '../UserInterface_/components/Description/Description'
+import QueryURL from '../../services/QueryURL'
 import MetadataCapturer from '../Layers_/MetadataCapturer.js'
 import { Kinds } from '../../../pre/tools'
-import DataShaders from '../../Ancillary/DataShaders'
+import DataShaders from '../../services/DataShaders'
 import calls from '../../../pre/calls'
 import TimeControl from '../TimeControl_/TimeControl'
+import '../Map_/SimplifiedVectorGrid'
 
 import gjv from 'geojson-validation'
 import {
@@ -26,6 +28,25 @@ import {
 } from '../../../external/js-colormaps/js-colormaps.js'
 
 let L = window.L
+
+// --- Per-layer fade control ---
+// Leaflet's tile fade is map-level (_fadeAnimated). Time-enabled tile/raster
+// layers should never fade (instant tile swap on pan or time change).
+// All other tile layers fade normally.
+// Strategy: patch _tileReady to check a per-layer _noFade flag.
+;(function patchPerLayerFade() {
+    const origTileReady = L.GridLayer.prototype._tileReady
+    L.GridLayer.prototype._tileReady = function (coords, err, tile) {
+        if (this._noFade && this._map) {
+            const wasFade = this._map._fadeAnimated
+            this._map._fadeAnimated = false
+            origTileReady.call(this, coords, err, tile)
+            this._map._fadeAnimated = wasFade
+            return
+        }
+        return origTileReady.call(this, coords, err, tile)
+    }
+})()
 
 let essenceFina = function () {}
 
@@ -199,6 +220,27 @@ let Map_ = {
         }
 
         if (this.map.zoomControl) this.map.zoomControl.setPosition('topright')
+
+        // Home button on zoom controls (resets to configured initial view)
+        var HomeControl = L.Control.extend({
+            options: { position: 'topright' },
+            onAdd: function () {
+                var container = L.DomUtil.create('div', 'leaflet-control-zoom leaflet-bar leaflet-control')
+                var btn = L.DomUtil.create('a', 'leaflet-control-zoom-home', container)
+                btn.innerHTML = '<i class="mdi mdi-home-variant-outline" style="font-size:16px;line-height:30px;"></i>'
+                btn.href = '#'
+                btn.title = 'Reset View'
+                btn.setAttribute('role', 'button')
+                btn.setAttribute('aria-label', 'Reset View')
+                L.DomEvent.disableClickPropagation(btn)
+                L.DomEvent.on(btn, 'click', function (e) {
+                    L.DomEvent.preventDefault(e)
+                    Map_.resetView(L_.view)
+                })
+                return container
+            },
+        })
+        this.map.addControl(new HomeControl())
 
         if (Map_.mapScaleZoom) {
             L.control
@@ -505,7 +547,8 @@ let Map_ = {
         layerObj,
         cb,
         skipOrderedBringToFront,
-        stopLoops
+        stopLoops,
+        resolvedUrl
     ) {
         // If it's a dynamic extent layer, just re-call its function
         const dynamicExtentKey = `dynamicextent_${layerObj.name}`
@@ -542,8 +585,15 @@ let Map_ = {
             ) {
                 // Original
                 if (L_._layersBeingMade[layerObj.name] !== true) {
-                    // makeLayer now handles all layer swapping internally for refresh operations
                     L_.layers.on[layerObj.name] = true
+
+                    // Pass `resolvedUrl` through to makeLayer instead of
+                    // mutating `layerObj.url`. Mutation leaked the resolved
+                    // URL to any concurrent code reading `layer.url` during
+                    // the async makeLayer window (most importantly to a
+                    // second TimeControl.reloadLayer() call that would then
+                    // capture the *resolved* URL as its "template" and
+                    // corrupt the placeholders for every subsequent reload).
                     await makeLayer(
                         layerObj,
                         true,
@@ -551,17 +601,30 @@ let Map_ = {
                         null,
                         null,
                         stopLoops,
-                        true
+                        true,
+                        null,
+                        resolvedUrl
                     )
                     L_.addVisible(Map_, [layerObj.name])
 
                     L_.enforceVisibilityCutoffs()
                 } else {
-                    console.warn(
-                        `WARNING - refreshLayer: Cannot make layer ${layerObj.display_name}/${layerObj.name} as it's already being made!`
-                    )
-                    if (typeof cb === 'function') cb()
-                    return false
+                    // A reload of this same layer is already in flight.
+                    // Instead of silently dropping this request (causing
+                    // "gaps" where dynamically-appearing data fails to
+                    // show up), coalesce it into a single pending queued
+                    // reload that fires after the in-flight one finishes.
+                    // The queue uses one slot per layer name — duplicate
+                    // queued reloads coalesce automatically.
+                    L_._layerReloadQueue = L_._layerReloadQueue || {}
+                    L_._layerReloadQueue[layerObj.name] = {
+                        layerObj,
+                        cb,
+                        skipOrderedBringToFront,
+                        stopLoops,
+                        resolvedUrl,
+                    }
+                    return true
                 }
                 if (typeof cb === 'function') cb()
                 return true
@@ -682,7 +745,8 @@ async function makeLayer(
     forceMake,
     stopLoops,
     isRefresh = false,
-    targetMapContext = null
+    targetMapContext = null,
+    resolvedUrl = null
 ) {
     // Default to main map context for backward compatibility
     const mapContext = targetMapContext || {
@@ -703,72 +767,121 @@ async function makeLayer(
         } else {
             lockRegistry[layerName] = true
         }
-        //Decide what kind of layer it is
-        //Headers do not need to be made
-        if (layerObj.type != 'header') {
-            //Simply call the appropriate function for each layer type
-            switch (layerObj.type) {
-                case 'vector':
-                    await makeVectorLayer(
-                        layerObj,
-                        evenIfOff,
-                        null,
-                        forceGeoJSON,
-                        isRefresh,
-                        mapContext
-                    )
-                    break
-                case 'velocity':
-                    await makeVelocityLayer(
-                        layerObj,
-                        evenIfOff,
-                        null,
-                        forceGeoJSON,
-                        mapContext
-                    )
-                    break
-                case 'tile':
-                    makeTileLayer(layerObj, mapContext)
-                    break
-                case 'vectortile':
-                    makeVectorTileLayer(layerObj, mapContext)
-                    break
-                case 'query':
-                    await makeVectorLayer(
-                        layerObj,
-                        false,
-                        true,
-                        forceGeoJSON,
-                        false,
-                        mapContext
-                    )
-                    break
-                case 'data':
-                    makeDataLayer(layerObj, mapContext)
-                    break
-                case 'image':
-                    makeImageLayer(layerObj, mapContext)
-                    break
-                case 'model':
-                    //Globe only
-                    makeModelLayer(layerObj, mapContext)
-                    break
-                case 'video':
-                    makeVideoLayer(layerObj, mapContext)
-                    break
-                default:
-                    console.warn('Unknown layer type: ' + layerObj.type)
+
+        // Wrap the layer-builder dispatch in try/finally so the lock is
+        // ALWAYS released (and any queued reload drained) even if one of
+        // the per-type builders throws. Otherwise the lock would stay
+        // pinned at `true` and every subsequent refreshLayer call for
+        // this layer would queue against a permanently-locked entry that
+        // never drains — silently breaking all future reloads.
+        let madeSuccessfully = true
+        try {
+            //Decide what kind of layer it is
+            //Headers do not need to be made
+            if (layerObj.type != 'header') {
+                //Simply call the appropriate function for each layer type
+                switch (layerObj.type) {
+                    case 'vector':
+                        await makeVectorLayer(
+                            layerObj,
+                            evenIfOff,
+                            null,
+                            forceGeoJSON,
+                            isRefresh,
+                            mapContext,
+                            resolvedUrl
+                        )
+                        break
+                    case 'velocity':
+                        await makeVelocityLayer(
+                            layerObj,
+                            evenIfOff,
+                            null,
+                            forceGeoJSON,
+                            mapContext
+                        )
+                        break
+                    case 'tile':
+                        makeTileLayer(layerObj, mapContext)
+                        break
+                    case 'vectortile':
+                        makeVectorTileLayer(layerObj, mapContext)
+                        break
+                    case 'query':
+                        await makeVectorLayer(
+                            layerObj,
+                            false,
+                            true,
+                            forceGeoJSON,
+                            false,
+                            mapContext
+                        )
+                        break
+                    case 'data':
+                        makeDataLayer(layerObj, mapContext)
+                        break
+                    case 'image':
+                        makeImageLayer(layerObj, mapContext)
+                        break
+                    case 'model':
+                        //Globe only
+                        makeModelLayer(layerObj, mapContext)
+                        break
+                    case 'video':
+                        makeVideoLayer(layerObj, mapContext)
+                        break
+                    default:
+                        console.warn('Unknown layer type: ' + layerObj.type)
+                }
             }
-        }
 
-        // release hold on layer (use same registry as above)
-        lockRegistry[layerName] = false
+            if (stopLoops !== true && layerObj.type === 'vector') {
+                Filtering.updateGeoJSON(layerObj.name)
+                Filtering.triggerFilter(layerObj.name)
+            }
+        } catch (err) {
+            madeSuccessfully = false
+            console.error(
+                `ERROR - makeLayer: failed to make layer ${layerObj.display_name}/${layerObj.name}`,
+                err
+            )
+        } finally {
+            // release hold on layer (use same registry as above)
+            lockRegistry[layerName] = false
 
-        if (stopLoops !== true && layerObj.type === 'vector') {
-            Filtering.updateGeoJSON(layerObj.name)
-            Filtering.triggerFilter(layerObj.name)
+            // Drain any queued reload request for this layer that arrived
+            // while the lock was held. We dequeue exactly one entry — the
+            // queue coalesces by layer name so newer queued requests have
+            // already replaced older ones. Fire-and-forget: the queued
+            // caller's Promise has already resolved with `true`, so we
+            // don't need to wait or propagate this result.
+            //
+            // CRITICAL: this MUST run in finally — otherwise an exception
+            // inside the switch above would leave the queue holding a
+            // stale entry that the next caller would re-queue against,
+            // permanently blocking reloads for this layer.
+            L_._layerReloadQueue = L_._layerReloadQueue || {}
+            if (L_._layerReloadQueue[layerObj.name]) {
+                const queued = L_._layerReloadQueue[layerObj.name]
+                delete L_._layerReloadQueue[layerObj.name]
+                // Use setTimeout 0 so the current resolve() chain unwinds
+                // first — this prevents stack growth if multiple reloads
+                // are queued back-to-back, and gives any awaiting code in
+                // the original caller a chance to see makeLayer's result
+                // before the next reload begins.
+                setTimeout(() => {
+                    Map_.refreshLayer(
+                        queued.layerObj,
+                        queued.cb,
+                        queued.skipOrderedBringToFront,
+                        queued.stopLoops,
+                        queued.resolvedUrl
+                    )
+                }, 0)
+            }
+
+            resolve(madeSuccessfully)
         }
-        resolve(true)
     })
 }
 
@@ -906,7 +1019,8 @@ async function makeVectorLayer(
     useEmptyGeoJSON,
     forceGeoJSON,
     isRefresh = false,
-    mapContext = null
+    mapContext = null,
+    resolvedUrl = null
 ) {
     // Default to main map context for backward compatibility
     const ctx = mapContext || {
@@ -920,7 +1034,11 @@ async function makeVectorLayer(
         else
             captureVector(
                 layerObj,
-                { evenIfOff: evenIfOff, useEmptyGeoJSON: useEmptyGeoJSON },
+                {
+                    evenIfOff: evenIfOff,
+                    useEmptyGeoJSON: useEmptyGeoJSON,
+                    resolvedUrl: resolvedUrl,
+                },
                 add,
                 (f) => {
                     Map_.map.on('moveend', f)
@@ -944,7 +1062,10 @@ async function makeVectorLayer(
             data = F_.parseIntoGeoJSON(data)
 
             let invalidGeoJSONTrace = gjv.valid(data, true)
-            const allowableErrors = [`position must only contain numbers`]
+            const allowableErrors = [
+                `position must only contain numbers`,
+                `coord_properties`,
+            ]
 
             invalidGeoJSONTrace = invalidGeoJSONTrace.filter((t) => {
                 if (typeof t !== 'string') return false
@@ -962,7 +1083,8 @@ async function makeVectorLayer(
                 if (data != null && data != 'off') {
                     data = null
                     console.warn(
-                        `ERROR: ${layerObj.display_name} has invalid GeoJSON!`
+                        `ERROR: ${layerObj.display_name} has invalid GeoJSON!`,
+                        invalidGeoJSONTrace
                     )
                 }
 
@@ -1031,6 +1153,11 @@ async function makeVectorLayer(
                     true,
                     true
                 )
+            }
+
+            // Clear local time filter cache on refresh so new data is used
+            if (isRefresh && L_._localTimeFilterCache) {
+                delete L_._localTimeFilterCache[layerObj.name]
             }
 
             ctx.layerRegistry.attachments[layerObj.name] = vl.sublayers
@@ -1266,14 +1393,6 @@ async function makeTileLayer(layerObj, mapContext = null) {
         default: true,
     }
 
-    // Helper function to add default 'asset_' prefix to bands in expressions if not already prefixed
-    const processExpression = (expression) => {
-        if (!expression || expression.trim() === '') return expression
-        // Replace bX or BX (where X is a number) with asset_bX or asset_BX
-        // Only replace if not already prefixed with an asset name (word_bX pattern)
-        return expression.replace(/(?<!\w)([bB])(\d+)/g, 'asset_$1$2')
-    }
-
     let layerUrl = L_.getUrl(layerObj.type, layerObj.url, layerObj)
 
     let splitColonType
@@ -1287,7 +1406,12 @@ async function makeTileLayer(layerObj, mapContext = null) {
             case 'stac-collection':
                 splitColonType = splitColonLayerUrl[0]
                 // Use shared transformation function
-                layerUrl = L_.transformStacUrl(layerObj.url, layerObj, 'tile')
+                layerUrl = transformStacUrl(
+                    layerObj.url,
+                    layerObj,
+                    'tile',
+                    window.location
+                )
                 // Cache transformed URL for reuse (e.g., in animations)
                 layerObj._transformedUrl = layerUrl
                 layerObj.tileformat = 'wmts'
@@ -1322,6 +1446,7 @@ async function makeTileLayer(layerObj, mapContext = null) {
                     layerObj.tileMatrixSet || 'WebMercatorQuad'
                 }/{z}/{x}/{y}.webp?url=${layerUrl}${bandsParam}${resamplingParam}`
 
+                break
             default:
                 break
         }
@@ -1381,6 +1506,11 @@ async function makeTileLayer(layerObj, mapContext = null) {
         currentCogExpression: layerObj.currentCogExpression,
         variables: layerObj.variables || {},
     })
+
+    // Time-enabled tile layers should never fade (instant swap on pan or time change)
+    if (layerObj.time && layerObj.time.enabled === true) {
+        ctx.layerRegistry.layer[layerObj.name]._noFade = true
+    }
 
     // Add to map
     if (ctx.default != true) {
@@ -1515,10 +1645,21 @@ function makeVectorTileLayer(layerObj, mapContext = null) {
         )
     }
 
+    // Hide sublayers not explicitly listed in vtLayer styles.
+    // Without this, L.vectorGrid renders all sublayers with default blue styling.
+    const vtLayerStyles = layerObj.style.vtLayer || {}
+    const resolvedVtLayerStyles = new Proxy(vtLayerStyles, {
+        get(target, prop) {
+            if (prop in target) return target[prop]
+            return { fill: false, stroke: false, weight: 0, fillOpacity: 0, opacity: 0 }
+        },
+        has() { return true },
+    })
+
     var vectorTileOptions = {
         layerName: layerObj.name,
         rendererFactory: L.svg.tile,
-        vectorTileLayerStyles: layerObj.style.vtLayer || {},
+        vectorTileLayerStyles: resolvedVtLayerStyles,
         interactive: true,
         minZoom: layerObj.minZoom,
         maxZoom: layerObj.maxZoom,
@@ -1536,8 +1677,22 @@ function makeVectorTileLayer(layerObj, mapContext = null) {
         })(layerObj.style.vtId),
     }
 
-    L_.layers.layer[layerObj.name] = L.vectorGrid
-        .protobuf(layerUrl, vectorTileOptions)
+    // For extrusion-enabled layers (e.g., OSM buildings), use the simplified
+    // variant with a moderate tolerance to reduce polygon vertex counts. This
+    // significantly improves 2D rendering performance for dense tiles.
+    if (layerObj.extrudeEnabled && layerObj.simplifyTolerance !== 0) {
+        vectorTileOptions.simplifyTolerance = layerObj.simplifyTolerance ?? 4
+    }
+
+    const vectorGridFactory =
+        vectorTileOptions.simplifyTolerance > 0
+            ? L.simplifiedVectorGrid.protobuf
+            : L.vectorGrid.protobuf
+
+    L_.layers.layer[layerObj.name] = vectorGridFactory(
+        layerUrl,
+        vectorTileOptions
+    )
         .on('click', function (e, b, x) {
             let layerName = e.target.options.layerName
             let vtId = L_.layers.layer[layerName].vtId
@@ -1641,7 +1796,74 @@ function makeDataLayer(layerObj, mapContext = null) {
         map: Map_.map,
         layerRegistry: L_.layers,
     }
-    let layerUrl = L_.getUrl(layerObj.type, layerObj.demtileurl, layerObj)
+
+    // COG:/stac-collection: prefixes (or demSourceType field) — serve 32-bit float
+    // tiles via TiTiler. leaflet.tilelayer.gl decodes client-side (NPY preferred)
+    // and encodes as RGBA float so the colorize shader works unchanged.
+    // TiTiler uses XYZ (tms: false); non-TiTiler sources use TMS (tms: true).
+    const demUrl = layerObj.demtileurl || ''
+    const demSourceType = layerObj.demSourceType || ''
+    // Detect COG: either explicit prefix or demSourceType field set to 'COG'
+    const isCogSource =
+        demUrl.startsWith('COG:') ||
+        (demSourceType === 'COG' &&
+            !demUrl.startsWith('stac-collection:') &&
+            !demUrl.startsWith('http'))
+    // Detect stac-collection: either explicit prefix or demSourceType field
+    const isStacSource =
+        demUrl.startsWith('stac-collection:') ||
+        demSourceType === 'stac-collection'
+    let layerUrl
+    let isTiTilerSource = false
+    if (isCogSource) {
+        isTiTilerSource = true
+        // Strip 'COG:' prefix if present, otherwise use the path as-is
+        let cogUrl = demUrl.startsWith('COG:') ? demUrl.slice(4) : demUrl
+        if (!F_.isUrlAbsolute(cogUrl)) {
+            // Prepend mission directory for relative paths (same as L_.getUrl)
+            cogUrl = L_.missionPath + cogUrl
+        }
+        if (!F_.isUrlAbsolute(cogUrl)) {
+            // Pass a TiTiler-relative path (../../ reaches the project root
+            // where Missions/ lives); in Docker use an absolute /path instead
+            cogUrl =
+                window.mmgisglobal.IS_DOCKER === 'true'
+                    ? `/${cogUrl}`
+                    : `../../${cogUrl}`
+        }
+        const origin = window.location.origin
+        const pathname = (window.location.pathname || '').replace(/\/$/g, '')
+        const baseUrl = `${origin}${pathname}`
+        const bidx = (layerObj.cogBands && layerObj.cogBands[0]) || 1
+        const nodata =
+            layerObj.cogNodata != null ? `&nodata=${layerObj.cogNodata}` : ''
+        const tms = layerObj.tileMatrixSet || 'WebMercatorQuad'
+        const parser = layerObj.demparser || 'npy'
+        let tileBase
+        if (parser === 'terrarium') {
+            tileBase = `${baseUrl}/titiler/cog/tiles/${tms}/{z}/{x}/{y}.png?algorithm=terrarium`
+        } else if (parser === 'terrainrgb') {
+            tileBase = `${baseUrl}/titiler/cog/tiles/${tms}/{z}/{x}/{y}.png?algorithm=terrainrgb`
+        } else {
+            tileBase = `${baseUrl}/titiler/cog/tiles/${tms}/{z}/{x}/{y}.npy`
+        }
+        const qsep = tileBase.includes('?') ? '&' : '?'
+        layerUrl = `${tileBase}${qsep}url=${encodeURIComponent(cogUrl)}&bidx=${bidx}${nodata}`
+    } else if (isStacSource) {
+        isTiTilerSource = true
+        // For stac-collection without prefix, normalise to stac-collection:{name}
+        const normUrl = demUrl.startsWith('stac-collection:')
+            ? demUrl
+            : `stac-collection:${demUrl}`
+        layerUrl = transformStacUrl(
+            normUrl,
+            layerObj,
+            'data',
+            window.location
+        )
+    } else {
+        layerUrl = L_.getUrl(layerObj.type, demUrl, layerObj)
+    }
 
     let bb = null
     if (layerObj.hasOwnProperty('boundingBox')) {
@@ -1651,8 +1873,23 @@ function makeDataLayer(layerObj, mapContext = null) {
         )
     }
 
-    const shader = F_.getIn(layerObj, 'variables.shader') || {}
+    const shader = { ...(F_.getIn(layerObj, 'variables.shader') || {}) }
     const shaderType = shader.type || 'image'
+
+    // For terrarium tiles, auto-inject -32768 as a no-data sentinel.
+    // TiTiler encodes no-data pixels as R=G=B=0 which decodes to exactly -32768 in terrarium.
+    // Adding it to noDataValues causes the GLSL nodatavalue check to render those pixels
+    // transparent AND causes the JS min/max loop to skip them, keeping the color scale clean.
+    if ((isCogSource || isStacSource) && (layerObj.demparser || 'npy') === 'terrarium') {
+        const ndv = shader.noDataValues ? shader.noDataValues.map(Number) : []
+        if (!ndv.includes(-32768)) ndv.push(-32768)
+        shader.noDataValues = ndv
+    }
+    if ((isCogSource || isStacSource) && (layerObj.demparser || 'npy') === 'terrainrgb') {
+        const ndv = shader.noDataValues ? shader.noDataValues.map(Number) : []
+        if (!ndv.includes(-10000)) ndv.push(-10000)
+        shader.noDataValues = ndv
+    }
 
     var uniforms = {}
     for (let i = 0; i < DataShaders[shaderType].settings.length; i++) {
@@ -1661,8 +1898,13 @@ function makeDataLayer(layerObj, mapContext = null) {
     }
 
     L_.layers.layer[layerObj.name] = L.tileLayer.gl({
+        // Always use standard 256px Leaflet tile grid so {z}/{x}/{y} coordinates
+        // stay within the TMS spec. cogTileSize only controls TiTiler's output
+        // pixel dimensions (width/height params) — the smaller raster is
+        // upscaled to 256px by the WebGL texture sampler.
+        bounds: bb,
         options: {
-            tms: true,
+            tms: !isTiTilerSource,
             bounds: bb,
         },
         fragmentShader: DataShaders[shaderType].frag,
@@ -1670,6 +1912,11 @@ function makeDataLayer(layerObj, mapContext = null) {
         pixelPerfect: true,
         uniforms: uniforms,
     })
+
+    // Time-enabled data/GL layers should never fade
+    if (layerObj.time && layerObj.time.enabled === true) {
+        L_.layers.layer[layerObj.name]._noFade = true
+    }
 
     if (DataShaders[shaderType].attachImmediateEvents) {
         DataShaders[shaderType].attachImmediateEvents(layerObj.name, shader)
@@ -1993,27 +2240,9 @@ function allLayersLoaded() {
         L_.loaded()
         //OTHER TEMPORARY TEST STUFF THINGS
 
-        if (L_.UserInterface_.isMobile !== true) {
-            // Turn on legend if displayOnStart is true
-            if ('LegendTool' in ToolController_.toolModules) {
-                if (
-                    ToolController_.toolModules['LegendTool'].displayOnStart ==
-                    true
-                ) {
-                    ToolController_.toolModules['LegendTool'].make(
-                        'toolContentSeparated_Legend'
-                    )
-                    ToolController_.activeSeparatedTools.push('LegendTool')
-                    let _event = new CustomEvent('toggleSeparatedTool', {
-                        detail: {
-                            toggledToolName: 'LegendTool',
-                            visible: true,
-                        },
-                    })
-                    document.dispatchEvent(_event)
-                }
-            }
-        }
+        // displayOnStart for separated tools (e.g. Legend) is now handled
+        // by ToolController_.finalizeTools() above — Map_ does not reference
+        // specific tools.
     }
 }
 

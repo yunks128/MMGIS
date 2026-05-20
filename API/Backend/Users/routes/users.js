@@ -39,6 +39,15 @@ router.post("/has", function (req, res, next) {
 });
 
 router.post("/first_signup", function (req, res, next) {
+  if (!req.body.password || !isStrongPassword(req.body.password)) {
+    res.send({
+      status: "failure",
+      message:
+        "Password is not strong enough. Must be at least 8 characters long and contain at least: 1 uppercase letter, 1 lowercase letter, 1 number and 1 symbol.",
+    });
+    return;
+  }
+
   User.count()
     .then((count) => {
       if (count === 0) {
@@ -228,20 +237,70 @@ router.post("/signup", function (req, res, next) {
  * User login
  */
 router.post("/login", function (req, res) {
+  let MMGISUser;
+  try {
+    let userCookie = req.cookies.MMGISUser;
+    if (typeof userCookie === "string" && userCookie.endsWith("}undefined"))
+      userCookie = userCookie.substring(0, userCookie.length - 9);
+
+    MMGISUser = userCookie ? JSON.parse(userCookie) : false;
+  } catch (err) {
+    res.send({ status: "failure", message: "Malformed MMGISUser cookie." });
+    return null;
+  }
+
+  // Token-based re-authentication (page reload): verify the token in the DB
+  // and refresh session data in-place. Session regeneration and token rotation
+  // are intentionally skipped to preserve multi-tab compatibility.
+  if (req.body.useToken && MMGISUser) {
+    if (MMGISUser.token == null) {
+      res.send({ status: "failure", message: "Bad token." });
+      return null;
+    }
+    User.findOne({
+      where: {
+        username: MMGISUser.username,
+        token: MMGISUser.token,
+      },
+      attributes: ["id", "username", "email", "permission"],
+    })
+      .then((user) => {
+        if (!user) {
+          res.send({ status: "failure", message: "Bad token." });
+        } else {
+          req.session.user = user.username;
+          req.session.uid = user.id;
+          req.session.permission = user.permission;
+          if (!req.session.token) {
+            req.session.token = MMGISUser.token;
+          }
+          req.session.save(() => {
+            res.send({
+              status: "success",
+              username: user.username,
+              token: req.session.token,
+              groups: getUserGroups(user.username, req.leadGroupName),
+              additional:
+                process.env.THIRD_PARTY_COOKIES === "true"
+                  ? `; SameSite=None;${
+                      process.env.NODE_ENV === "production" ? " Secure" : ""
+                    }`
+                  : "",
+            });
+          });
+        }
+        return null;
+      })
+      .catch((err) => {
+        res.send({ status: "failure", message: "Bad token." });
+      });
+    return null;
+  }
+
+  // Credential-based login: regenerate the session to prevent session fixation
   clearLoginSession(req);
 
   req.session.regenerate((err) => {
-    let MMGISUser;
-    try {
-      let userCookie = req.cookies.MMGISUser;
-      if (typeof userCookie === "string" && userCookie.endsWith("}undefined"))
-        userCookie = userCookie.substring(0, userCookie.length - 9);
-
-      MMGISUser = userCookie ? JSON.parse(userCookie) : false;
-    } catch (err) {
-      res.send({ status: "failure", message: "Malformed MMGISUser cookie." });
-      return;
-    }
     let username = req.body.username || (MMGISUser ? MMGISUser.username : null);
 
     if (username == null) {
@@ -298,54 +357,29 @@ router.post("/login", function (req, res) {
                           : "",
                     });
                   });
-                  return null;
+                  return;
                 })
                 .catch((err) => {
                   res.send({ status: "failure", message: "Login failed." });
-                  return null;
+                  return;
                 });
-              return null;
+              return;
             } else {
               res.send({
                 status: "failure",
                 message: "Invalid username or password.",
               });
-              return null;
+              return;
             }
           }
 
-          if (req.body.useToken && MMGISUser) {
-            if (MMGISUser.token == null) {
-              res.send({ status: "failure", message: "Bad token." });
-              return null;
-            }
-            User.findOne({
-              where: {
-                username: MMGISUser.username,
-                token: MMGISUser.token,
-              },
-            })
-              .then((user) => {
-                if (!user) {
-                  res.send({ status: "failure", message: "Bad token." });
-                } else {
-                  pass(null, true, true);
-                }
-                return null;
-              })
-              .catch((err) => {
-                res.send({ status: "failure", message: "Bad token." });
-              });
-            return null;
-          } else {
-            bcrypt.compare(req.body.password, user.password, pass);
-          }
+          bcrypt.compare(req.body.password, user.password, pass);
           return null;
         }
         return null;
       })
       .catch((err) => {
-        res.send({ status: "failure", message: "Bad token." });
+        res.send({ status: "failure", message: "Login failed." });
       });
   });
   return null;
@@ -423,6 +457,12 @@ router.post("/resetPassword", function (req, res) {
     res.send({ status: "failure", message: "Missing password." });
   } else if (resetToken == null || resetToken == "") {
     res.send({ status: "failure", message: "Missing resetToken." });
+  } else if (!isStrongPassword(password)) {
+    res.send({
+      status: "failure",
+      message:
+        "Password is not strong enough. Must be at least 8 characters long and contain at least: 1 uppercase letter, 1 lowercase letter, 1 number and 1 symbol.",
+    });
   } else {
     User.findOne({
       where: {
