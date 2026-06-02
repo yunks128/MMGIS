@@ -166,5 +166,3 @@ To test the plugin during development:
 ## References
 
 - **Backend plugin:** `API/MMGIS-Plugin-Backend/Vessels/`
-- **API documentation:** `/docs/vessel-tracking-integration.md`
-- **Code map:** `/VESSEL-TRACKING-CODE-MAP.md`
