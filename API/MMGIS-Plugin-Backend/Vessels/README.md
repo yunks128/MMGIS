@@ -619,25 +619,6 @@ function rebindVesselPopups() {
 setInterval(rebindVesselPopups, 2000);       // 2 s — cheap walk, only binds new markers
 ```
 
-### Popup card fields
-
-```
-┌────────────────────────────────────┐
-│ 🚢  AURORA BOREALIS                │  ← name
-│     MMSI 259012345  🇳🇴 Norway      │  ← MMSI + flag
-│                                    │
-│  Speed     12.4 kn                 │
-│  Course    045°                    │
-│  Heading   042°                    │
-│  Status    Under Way Using Engine  │
-│  Position  70.34°N, 24.11°E        │
-│  Draught   6.2 m                   │
-│  Last seen 4 min ago               │
-│                                    │
-│  [MarineTraffic ↗]  [VesselFinder ↗]│
-└────────────────────────────────────┘
-```
-
 ---
 
 ## Copilot Chat Tools
