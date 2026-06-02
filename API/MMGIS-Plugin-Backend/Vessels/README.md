@@ -621,27 +621,6 @@ setInterval(rebindVesselPopups, 2000);       // 2 s — cheap walk, only binds n
 
 ---
 
-## Copilot Chat Tools
-
-These tools are registered in `tool-registry.json` and handled by `renderers.js`:
-
-| Tool name | Trigger phrase | What it does |
-|---|---|---|
-| `show_vessels_in_area` | "show ships near X" | Renders vessel markers in a bbox as a temporary overlay |
-| `get_vessel_track` | "track vessel MMSI" | Draws 7-day route polyline on the map |
-| `vessel_ice_crossings` | "vessels in ice" | Identifies vessels in high sea-ice concentration areas |
-| `get_vessel_info` | "info on vessel X" | Returns enriched metadata card for a vessel by MMSI or name |
-
-### Adding a new Copilot tool
-
-Three locations must all agree:
-
-1. **`tool-registry.json`** — add entry with unique `name` and `execution.ui.type`
-2. **`renderers.js`** — export `render_<type>` and register it in the `RENDERERS` map
-3. **`provider.js` `buildPrompt()`** — add a quick-reference example; without one the LLM tends to say "I don't have a tool for that"
-
----
-
 ## Development
 
 To test the plugin:
