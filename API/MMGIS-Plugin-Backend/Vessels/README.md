@@ -259,21 +259,149 @@ Add this vector layer to your mission config:
 
 > ⚠️ `initialwindowstart` must be an **absolute ISO timestamp**. `TimeUI.js` supports `"now"` for `initialwindowend` but does **not** parse `"now - N"` for the start. Always insert a real date.
 
-### Insert mission config (SQL)
+### Adding the Vessel Layer to Your Mission
+
+You have **two methods** to add the vessel layer to your MMGIS mission configuration:
+
+#### Method 1: Web Interface (Recommended - Safest)
+
+The Configure Page provides a GUI for managing mission layers and automatically handles versioning.
+
+1. **Open the Configure Page**
+   ```
+   http://localhost:8888/configure
+   ```
+   (Use port 8889 if running in development mode)
+
+2. **Select Your Mission**
+   - Click on `frozon_ai_forecast` (or your mission name)
+   - Navigate to the **Layers** tab
+
+3. **Add the Vessel Layer**
+   - Click **Add Layer** or **Add Sublayer** (depending on where you want it)
+   - Fill in the layer configuration:
+     - **Name**: `Vessels (Live AIS)`
+     - **Type**: `vector`
+     - **URL**: `/api/vessels/live`
+     - **Time Settings**:
+       - Enable time: `true`
+       - End time field: `endtime`
+       - Time field: `lastSeen`
+       - Format: `ISO 8601`
+       - Refresh interval enabled: `true`
+       - Refresh interval amount: `30` (seconds)
+     - **Style**:
+       - Use key as name: `displayName`
+       - Radius: `6`
+       - Fill color: `#00aaff`
+       - Color: `#ffffff`
+       - Weight: `1`
+       - Fill opacity: `0.85`
+     - **Initial Time Window**:
+       - Start: `2026-05-04T20:00:00Z` (adjust to current date)
+       - End: `now`
+
+4. **Save Configuration**
+   - Click **Save** - this automatically creates a new config version
+   - The new version will be immediately available
+
+#### Method 2: SQL (Advanced - Direct Database Access)
+
+If you prefer to insert the layer configuration directly into the database, use this method.
+
+**Step 1: Connect to the Database**
+
+Using Docker (assuming your database container is `mmgis-db-1`):
+
+```bash
+# Interactive mode - paste SQL commands directly
+docker exec -it mmgis-db-1 psql -U <DB_USER> -d <DB_NAME>
+
+# Or execute from a file
+docker exec -i mmgis-db-1 psql -U <DB_USER> -d <DB_NAME> < add_vessel_layer.sql
+```
+
+Replace `<DB_USER>` and `<DB_NAME>` with your database credentials from `.env`:
+- Common values: `-U mmgis -d mmgis` or `-U postgres -d mmgis`
+
+**Step 2: Check Current Config Version**
+
+```sql
+SELECT mission, version 
+FROM configs 
+WHERE mission = 'frozon_ai_forecast' 
+ORDER BY version DESC 
+LIMIT 1;
+```
+
+**Step 3: Insert New Config Version with Vessel Layer**
 
 ```sql
 INSERT INTO configs (mission, version, config)
-SELECT mission, MAX(version) + 1,
-       jsonb_set(config::jsonb,
-         '{layers, <your_group_index>, sublayers}',
-         (config::jsonb -> 'layers' -> <idx> -> 'sublayers') || '<vessel_layer_json>'::jsonb
-       )::text
+SELECT 
+  'frozon_ai_forecast',
+  COALESCE(MAX(version), 0) + 1,
+  jsonb_set(
+    config::jsonb,
+    '{layers,0,sublayers}',
+    (config::jsonb->'layers'->0->'sublayers') || '[
+      {
+        "name": "Vessels (Live AIS)",
+        "type": "vector",
+        "url": "/api/vessels/live",
+        "time": {
+          "enabled": true,
+          "endtime": "endtime",
+          "timefield": "lastSeen",
+          "format": "ISO 8601",
+          "refreshIntervalEnabled": true,
+          "refreshIntervalAmount": 30
+        },
+        "style": {
+          "useKeyAsName": "displayName",
+          "radius": 6,
+          "fillColor": "#00aaff",
+          "color": "#ffffff",
+          "weight": 1,
+          "fillOpacity": 0.85
+        },
+        "initialwindowstart": "2026-05-04T20:00:00Z",
+        "initialwindowend": "now"
+      }
+    ]'::jsonb
+  )::text
 FROM configs
 WHERE mission = 'frozon_ai_forecast'
 GROUP BY mission, config
 ORDER BY version DESC
 LIMIT 1;
 ```
+
+**Step 4: Verify the New Version**
+
+```sql
+SELECT mission, version 
+FROM configs 
+WHERE mission = 'frozon_ai_forecast' 
+ORDER BY version DESC 
+LIMIT 1;
+```
+
+You should see the version number has incremented by 1.
+
+**Notes:**
+- The SQL above assumes the vessel layer should be added to the first layer group (`layers[0].sublayers`)
+- Adjust the path `'{layers,0,sublayers}'` if your mission structure is different
+- To find the correct layer group index, query the existing config structure first:
+  ```sql
+  SELECT jsonb_pretty(config::jsonb->'layers') 
+  FROM configs 
+  WHERE mission = 'frozon_ai_forecast' 
+  ORDER BY version DESC 
+  LIMIT 1;
+  ```
+
+**Important:** Never `UPDATE` an existing config row - always `INSERT` a new version. This preserves configuration history and allows rollback.
 
 ---
 
