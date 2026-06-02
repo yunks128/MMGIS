@@ -424,33 +424,106 @@ API/MMGIS-Plugin-Backend/Vessels/
 
 ## Data Flow
 
-### Ingest path
+### Ingest Path
 
+```mermaid
+flowchart TD
+    AIS["AISStream.io WebSocket<br/>wss://stream.aisstream.io/v0/stream"]
+    
+    POS["PositionReport Messages<br/>pos · speed · course<br/>heading · nav status<br/>Every 2-10 seconds"]
+    
+    STATIC["ShipStaticData Messages<br/>name · IMO · callsign<br/>dimensions · draught<br/>Every ~6 minutes"]
+    
+    CLIENT["aisstreamClient.js<br/>Merges PositionReport + ShipStaticData<br/>into unified vessel object"]
+    
+    CACHE["In-Memory Cache<br/>Map&lt;MMSI, VesselData&gt;<br/>TTL: 60 minutes"]
+    
+    THROTTLE["Persist Throttle<br/>Max 1 write per MMSI<br/>per 60 seconds"]
+    
+    DB[("PostgreSQL + PostGIS<br/>vessel_positions table<br/>7-day rolling retention")]
+    
+    AIS -->|message type 1-3| POS
+    AIS -->|message type 5| STATIC
+    POS --> CLIENT
+    STATIC --> CLIENT
+    CLIENT --> CACHE
+    CACHE --> THROTTLE
+    THROTTLE -->|batch insert| DB
+    
+    style AIS fill:#e1f5ff
+    style CLIENT fill:#fff3e0
+    style CACHE fill:#f3e5f5
+    style DB fill:#e8f5e9
 ```
-AISStream.io WebSocket
-  ↓  PositionReport  (pos · speed · course · heading · nav status — every 2 s–3 min)
-  ↓  ShipStaticData  (name · IMO · dimensions · draught — every ~6 min)
-      ↓
-  aisstreamClient.js  — merges both types into one in-memory entry per MMSI
-      ↓
-  Persist throttle (60 s/MMSI)  →  vessel_positions  (PostGIS)
+
+### Query Path
+
+```mermaid
+flowchart TD
+    USER["User moves time slider<br/>to 2026-05-04T18:00:00Z"]
+    
+    CAPTURER["LayerCapturer.js<br/>Replaces {endtime} token"]
+    
+    URL["URL becomes:<br/>/api/vessels/live?at=2026-05-04T18:00:00Z"]
+    
+    API["GET /api/vessels/live"]
+    
+    MODE{Mode Selection}
+    
+    LIVE["Live Mode<br/>Read from in-memory cache"]
+    
+    HIST["Historical Mode<br/>Query PostGIS:<br/>SELECT DISTINCT ON (mmsi) *<br/>WHERE t_utc ≤ at<br/>ORDER BY mmsi, t_utc DESC"]
+    
+    FALLBACK["Live Fallback Mode<br/>Return live cache<br/>(when historical query empty)"]
+    
+    GEOJSON["Return GeoJSON<br/>FeatureCollection<br/>with _meta.mode"]
+    
+    LEAFLET["Leaflet redraws<br/>vessel markers on map"]
+    
+    POPUP["setInterval rebindVesselPopups()<br/>Re-attaches rich popup HTML<br/>to new markers every 2 sec"]
+    
+    USER --> CAPTURER
+    CAPTURER --> URL
+    URL --> API
+    API --> MODE
+    MODE -->|"|Δt| < 2 min"| LIVE
+    MODE -->|"within 7-day window"| HIST
+    MODE -->|"outside window or empty"| FALLBACK
+    LIVE --> GEOJSON
+    HIST --> GEOJSON
+    FALLBACK --> GEOJSON
+    GEOJSON --> LEAFLET
+    LEAFLET --> POPUP
+    
+    style USER fill:#e3f2fd
+    style API fill:#fff3e0
+    style MODE fill:#fce4ec
+    style GEOJSON fill:#f3e5f5
+    style LEAFLET fill:#e8f5e9
 ```
 
-### Query path
+### Country Decode
 
+```mermaid
+flowchart LR
+    MMSI["MMSI: 257012340"]
+    MID["Extract first 3 digits<br/>MID: 257"]
+    TABLE["MID Table Lookup<br/>269 countries"]
+    ISO["ISO-2 Code: NO"]
+    NAME["Country: Norway"]
+    PROPS["Feature Properties:<br/>displayName: 'VESSEL 257012340 Norway'<br/>flag: 'NO'<br/>countryName: 'Norway'"]
+    
+    MMSI --> MID
+    MID --> TABLE
+    TABLE --> ISO
+    TABLE --> NAME
+    ISO --> PROPS
+    NAME --> PROPS
+    
+    style MMSI fill:#e3f2fd
+    style TABLE fill:#fff3e0
+    style PROPS fill:#e8f5e9
 ```
-Browser time slider changes
-  → LayerCapturer.js replaces {endtime} in URL → ?at=2026-05-04T18:00:00Z
-  → GET /api/vessels/live?at=…
-  → mode selection (see Historical Replay section)
-  → GeoJSON FeatureCollection returned
-  → Leaflet redraws markers
-  → setInterval rebindVesselPopups() re-attaches popup HTML to new markers
-```
-
-### Country decode
-
-MMSI first 3 digits → MID table → ISO-2 country code → `displayName` and `flag` properties.
 
 ---
 
