@@ -2,6 +2,9 @@
 
 Real-time AIS ship position tracking via [AISStream.io](https://aisstream.io) WebSocket feed.
 
+![Vessel Tracking Screenshot](images/vessel-tracking-screenshot.png)
+*Live vessel tracking showing SALTEN (passenger vessel, Norway) with detailed vessel information and sea ice forecast overlay*
+
 ## Overview
 
 This plugin provides backend infrastructure for live vessel tracking and historical replay:
