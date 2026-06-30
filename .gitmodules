@@ -1,0 +1,4 @@
+[submodule "plugins/MMGIS-Plugins"]
+	path = plugins/MMGIS-Plugins
+	url = https://github.com/yunks128/MMGIS-Plugins.git
+	branch = ai-agent

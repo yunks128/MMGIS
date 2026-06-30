@@ -20,6 +20,7 @@ configure/public/toolConfigs.json
 !/plugins/plugin-cli.js
 !/plugins/plugin-registries.json
 !/plugins/README.md
+!/plugins/MMGIS-Plugins
 /plugins/plugin-state.json
 
 # Legacy plugin directories (kept for backward compatibility during migration)
