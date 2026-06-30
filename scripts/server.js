@@ -1,4 +1,4 @@
-require("dotenv").config();
+require("dotenv").config({ override: true });
 
 const fs = require("fs");
 const http = require("http");
@@ -578,10 +578,11 @@ function shouldCompress(req, res) {
 const helmet = require("helmet");
 let helmetConfig = {
   contentSecurityPolicy: {
+    useDefaults: false,
     directives: {
       defaultSrc: ["'self'", "blob:", "'unsafe-inline'", "'unsafe-eval'"],
       scriptSrc: ["'self'", "blob:", "'unsafe-inline'", "'unsafe-eval'"],
-      scriptSrcAttr: null,
+      scriptSrcAttr: ["'none'"],
       imgSrc: ["*", "data:", "blob:", "'unsafe-inline'"],
       styleSrc: ["*", "data:", "blob:", "'unsafe-inline'"],
       fontSrc: ["*", "data:", "blob:", "'unsafe-inline'"],
@@ -589,12 +590,17 @@ let helmetConfig = {
       mediaSrc: ["*", "data:", "blob:"],
       frameAncestors: process.env.FRAME_ANCESTORS
         ? JSON.parse(process.env.FRAME_ANCESTORS)
-        : "'none'",
+        : ["'none'"],
       frameSrc: process.env.FRAME_SRC
         ? JSON.parse(process.env.FRAME_SRC)
-        : "'none'",
+        : ["'none'"],
+      baseUri: ["'self'"],
+      formAction: ["'self'"],
+      objectSrc: ["'none'"],
+      ...(process.env.HTTPS === "true" && { upgradeInsecureRequests: [] }),
     },
   },
+  hsts: process.env.HTTPS === "true",
   crossOriginEmbedderPolicy: false,
   crossOriginOpenerPolicy: false,
   crossOriginResourcePolicy: false,

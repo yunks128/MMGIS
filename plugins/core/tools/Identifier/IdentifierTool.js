@@ -740,7 +740,7 @@ function queryDataValue(url, lng, lat, numBands, layerUUID, callback) {
                 }
             })
             .then((json) => {
-                if (json.values) {
+                if (json && json.values) {
                     const values = []
                     json.values.forEach((val, idx) => {
                         val[2].forEach((val2, idx2) => {
@@ -817,7 +817,7 @@ function queryDataValue(url, lng, lat, numBands, layerUUID, callback) {
                 }
             })
             .then((json) => {
-                if (json.values) {
+                if (json && json.values) {
                     const values = []
                     json.values.forEach((val, idx) => {
                         values.push([json.band_names[idx], [val]])

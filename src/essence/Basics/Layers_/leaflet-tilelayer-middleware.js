@@ -17,8 +17,60 @@ var colorFilterExtension = {
     intialize: function (url, options) {
         L.TileLayer.prototype.initialize.call(this, url, options)
     },
+    // Build a TiTiler BBOX-endpoint URL from tile coords when the map uses a custom CRS
+    // (e.g. EPSG:3413 polar stereographic).  Standard z/x/y tile endpoints interpret
+    // coords as WebMercatorQuad, which is wrong for any non-Web-Mercator map projection.
+    _buildStacBboxUrl: function (coords) {
+        const crs = this._map && this._map.options && this._map.options.crs
+        if (
+            !crs ||
+            !crs.options ||
+            !crs.options.resolutions ||
+            !crs.options.origin
+        )
+            return null
+
+        const origin = crs.options.origin // [x, y] top-left corner in CRS units
+        const res = crs.options.resolutions[coords.z]
+        if (res == null) return null
+
+        const tileSize =
+            (this.options && this.options.tileSize) || 256
+        const tileExtent = tileSize * res
+        const minx = origin[0] + coords.x * tileExtent
+        const maxy = origin[1] - coords.y * tileExtent
+        const maxx = minx + tileExtent
+        const miny = maxy - tileExtent
+
+        // Extract base collection URL from the layer URL template
+        // Template looks like: .../titilerpgstac/collections/NAME/tiles/TMS/{z}/{x}/{y}?assets=asset...
+        const templatePath = this._url.split('?')[0]
+        const templateQuery = this._url.split('?')[1] || 'assets=asset'
+        const m = templatePath.match(/^(.*\/collections\/[^/]+)\/tiles\//)
+        if (!m) return null
+        const baseCollectionUrl = m[1]
+
+        const crsCode = crs.code || 'EPSG:3413'
+        return (
+            `${baseCollectionUrl}/bbox/` +
+            `${minx},${miny},${maxx},${maxy}/` +
+            `${tileSize}x${tileSize}.png` +
+            `?coord_crs=${encodeURIComponent(crsCode)}&dst_crs=${encodeURIComponent(crsCode)}&nodata=-9999&${templateQuery}`
+        )
+    },
     getTileUrl: function (coords) {
-        let url = L.TileLayer.prototype.getTileUrl.call(this, coords)
+        // For stac-collection layers on a custom (non-WebMercator) projection, use the
+        // TiTiler BBOX endpoint so tile geographic areas are correctly computed.
+        let url =
+            this.options.splitColonType === 'stac-collection' &&
+            this._map &&
+            this._map.options &&
+            this._map.options.crs &&
+            this._map.options.crs.options &&
+            this._map.options.crs.options.resolutions
+                ? this._buildStacBboxUrl(coords) ||
+                  L.TileLayer.prototype.getTileUrl.call(this, coords)
+                : L.TileLayer.prototype.getTileUrl.call(this, coords)
 
         if (
             this.options.splitColonType === 'stac-collection' ||

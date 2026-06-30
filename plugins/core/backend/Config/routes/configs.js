@@ -150,7 +150,7 @@ function checkMissionPermission(req, res, next) {
 }
 
 function get(req, res, next, cb, options) {
-  const qMission = (options && options.mission) || req.query.mission;
+  const qMission = ((options && options.mission) || req.query.mission || '').replace(/\/+$/, '');
   const qFull = (options && options.full) || req.query.full;
   Config.findAll({
     limit: 1,

@@ -82,7 +82,13 @@ function discoverPlugins(pluginsRoot, type, configFile = "plugin.json", opts = {
     const sorted = repoDirs
         .filter((d) => {
             try {
-                return d.isDirectory() && d.name[0] !== "_" && d.name[0] !== ".";
+                if (d.name[0] === "_" || d.name[0] === ".") return false;
+                if (d.isDirectory()) return true;
+                // Follow symlinks — a symlink to a directory (e.g. --link install) is valid.
+                if (d.isSymbolicLink()) {
+                    return fs.statSync(path.join(pluginsRoot, d.name)).isDirectory();
+                }
+                return false;
             } catch {
                 return false;
             }
@@ -107,7 +113,9 @@ function discoverPlugins(pluginsRoot, type, configFile = "plugin.json", opts = {
         for (const pluginEntry of pluginEntries) {
             let pIsDir = false;
             try {
-                pIsDir = pluginEntry.isDirectory();
+                pIsDir = pluginEntry.isDirectory() ||
+                    (pluginEntry.isSymbolicLink() &&
+                        fs.statSync(path.join(typePath, pluginEntry.name)).isDirectory());
             } catch {
                 continue;
             }
