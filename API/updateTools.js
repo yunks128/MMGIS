@@ -1,15 +1,39 @@
 const fs = require("fs");
 const path = require("path");
+const semver = require("semver");
 
 const logger = require("./logger");
 const { validatePluginConfig } = require("./pluginValidation");
-const { discoverPlugins } = require("./pluginDiscovery");
+const { discoverPlugins, checkPluginDependencies } = require("./pluginDiscovery");
 
-const STANDARD_TOOLS_PATH = "./src/essence/Tools";
-const STANDARD_COMPONENTS_PATH = "./src/essence/Components";
-const ESSENCE_PATH = path.join(__dirname, "..", "src", "essence");
-const TOOL_PLUGIN_PATTERNS = ["Private-Tools", "Plugin-Tools"];
-const COMPONENT_PLUGIN_PATTERNS = ["Private-Components", "Plugin-Components"];
+const PLUGINS_ROOT = path.join(__dirname, "..", "plugins");
+const REPO_ROOT = path.join(__dirname, "..");
+const SRC_PRE_DIR = path.join(REPO_ROOT, "src", "pre");
+const MMGIS_VERSION = require("../package.json").version;
+
+/**
+ * Resolve a plugin path value for use in generated import statements.
+ * - Relative paths (starting with "./") are resolved from the plugin's
+ *   directory and converted to a path relative to src/pre/.
+ * - Legacy absolute-ish paths (starting with "../") are prefixed with
+ *   "../" as before (from src/pre/ → src/ → repo root).
+ *
+ * Always returns POSIX separators (/) since the result is used in JS
+ * import statements, not filesystem operations.
+ */
+function resolvePluginPath(pathValue, pluginPath) {
+  if (pathValue.startsWith("./") && pluginPath) {
+    const abs = path.resolve(pluginPath, pathValue);
+    const rel = path.relative(SRC_PRE_DIR, abs).split(path.sep).join("/");
+    return rel;
+  }
+  if (pathValue.startsWith("../")) {
+    // Legacy "../" prefix — keep existing behavior.
+    return `../${pathValue}`;
+  }
+  // Bare path — treat as legacy.
+  return `../${pathValue}`;
+}
 
 /**
  * Register a single plugin's parsed config.json onto the in-memory
@@ -42,7 +66,33 @@ function registerPlugin({
     );
     return false;
   }
+
+  // Check engines.mmgis compatibility.
+  if (config.engines && config.engines.mmgis) {
+    const coercedVersion = semver.coerce(MMGIS_VERSION);
+    if (coercedVersion && !semver.satisfies(coercedVersion, config.engines.mmgis)) {
+      logger(
+        "error",
+        `${pluginType[0].toUpperCase() + pluginType.slice(1)} '${name}' requires MMGIS ${config.engines.mmgis} but current version is ${MMGIS_VERSION} — skipping`,
+        loggerCategory
+      );
+      return false;
+    }
+  }
+
   const isOverride = registry[name] !== undefined;
+
+  // Enforce overridable: false — reject external plugins trying to
+  // override a core plugin that explicitly disallows it.
+  if (isOverride && registry[name].overridable === false) {
+    logger(
+      "error",
+      `${pluginType[0].toUpperCase() + pluginType.slice(1)} '${name}' is marked overridable:false and cannot be overridden by ${source}`,
+      loggerCategory
+    );
+    return false;
+  }
+
   registry[name] = config;
   logger(
     "loaded",
@@ -63,37 +113,13 @@ function registerPlugin({
 
 function updateTools() {
   let tools = {};
+  // Separate map from plugin name → pluginPath so we don't mutate manifests.
+  const toolPluginPaths = {};
 
-  // 1. Standard tools live directly under src/essence/Tools/<ToolName>/config.json
-  //    Use discoverPlugins() with an exact-name pattern so the shared
-  //    scanner picks up `Tools` as the container.
-  const standardToolPlugins = discoverPlugins(
-    path.join(ESSENCE_PATH),
-    ["__exact:Tools"],
-    "config.json",
-    { loggerCategory: "Tools" }
-  );
-  for (const plugin of standardToolPlugins) {
-    registerPlugin({
-      registry: tools,
-      name: plugin.name,
-      config: plugin.manifest,
-      pluginType: "tool",
-      source: "Tools",
-      loggerCategory: "Tools",
-    });
-  }
-
-  // 2. Plugin/private tool containers (e.g. *Plugin-Tools*, *Private-Tools*).
-  //    Same scan, but with substring matching on container names.
-  const pluginToolPlugins = discoverPlugins(
-    ESSENCE_PATH,
-    TOOL_PLUGIN_PATTERNS,
-    "config.json",
-    { loggerCategory: "Tools" }
-  );
-  for (const plugin of pluginToolPlugins) {
-    registerPlugin({
+  // Single-pass scan of plugins/*/tools/
+  const allTools = discoverPlugins(PLUGINS_ROOT, "tools", "plugin.json", { loggerCategory: "Tools" });
+  for (const plugin of allTools) {
+    const registered = registerPlugin({
       registry: tools,
       name: plugin.name,
       config: plugin.manifest,
@@ -101,6 +127,7 @@ function updateTools() {
       source: plugin.container,
       loggerCategory: "Tools",
     });
+    if (registered) toolPluginPaths[plugin.name] = plugin.pluginPath;
   }
 
   // 3. Sort by toolbarPriority (preserve previous behavior).
@@ -138,14 +165,20 @@ function updateTools() {
   let toolConfigs = "";
   const toolModules = {};
   let kindsModule = null;
+  // Paths values in plugin.json can be:
+  //   - Relative ("./DrawTool") — resolved from the plugin's directory
+  //   - Legacy ("../plugins/core/tools/X/XTool") — prefixed with "../"
+  // Both produce correct import paths relative to src/pre/.
   for (const t in tools) {
+    const pluginPath = toolPluginPaths[t] || null;
     for (const p in tools[t].paths) {
+      const resolved = resolvePluginPath(tools[t].paths[p], pluginPath);
       if (p === "Kinds") {
         kindsModule = p;
-        toolConfigs += `import kinds from '../${tools[t].paths[p]}'\n`;
+        toolConfigs += `import kinds from '${resolved}'\n`;
       } else {
         toolModules[p] = p;
-        toolConfigs += `import ${p} from '../${tools[t].paths[p]}'\n`;
+        toolConfigs += `import ${p} from '${resolved}'\n`;
       }
     }
   }
@@ -160,7 +193,7 @@ function updateTools() {
   if (kindsModule == null) {
     logger(
       "error",
-      "Kinds tool is required but is not found. Are you missing a config.js?",
+      "Kinds tool is required but is not found. Are you missing a plugin.json?",
       "Tools",
       null
     );
@@ -178,40 +211,19 @@ function updateTools() {
       );
     }
   }
+
+  // Check inter-plugin dependencies (warns if a tool's backend dep is missing/disabled).
+  checkPluginDependencies(PLUGINS_ROOT, "Tools");
 }
 
 function updateComponents() {
   let components = {};
+  const componentPluginPaths = {};
 
-  // 1. Standard components: src/essence/Components/<ComponentName>/config.json.
-  //    The standard Components directory is optional — `discoverPlugins`
-  //    will warn but not throw if it doesn't exist.
-  const standardComponentPlugins = discoverPlugins(
-    ESSENCE_PATH,
-    ["__exact:Components"],
-    "config.json",
-    { loggerCategory: "Components" }
-  );
-  for (const plugin of standardComponentPlugins) {
-    registerPlugin({
-      registry: components,
-      name: plugin.name,
-      config: plugin.manifest,
-      pluginType: "component",
-      source: "Components",
-      loggerCategory: "Components",
-    });
-  }
-
-  // 2. Plugin/private component containers.
-  const pluginComponentPlugins = discoverPlugins(
-    ESSENCE_PATH,
-    COMPONENT_PLUGIN_PATTERNS,
-    "config.json",
-    { loggerCategory: "Components" }
-  );
-  for (const plugin of pluginComponentPlugins) {
-    registerPlugin({
+  // Single-pass scan of plugins/*/components/
+  const allComponents = discoverPlugins(PLUGINS_ROOT, "components", "plugin.json", { loggerCategory: "Components" });
+  for (const plugin of allComponents) {
+    const registered = registerPlugin({
       registry: components,
       name: plugin.name,
       config: plugin.manifest,
@@ -219,6 +231,7 @@ function updateComponents() {
       source: plugin.container,
       loggerCategory: "Components",
     });
+    if (registered) componentPluginPaths[plugin.name] = plugin.pluginPath;
   }
 
   // 3. Write componentConfigs.json (Configure page) and src/pre/components.js.
@@ -245,9 +258,11 @@ function updateComponents() {
   let componentConfigs = "";
   const componentModules = {};
   for (const c in components) {
+    const pluginPath = componentPluginPaths[c] || null;
     for (const p in components[c].paths) {
+      const resolved = resolvePluginPath(components[c].paths[p], pluginPath);
       componentModules[p] = p;
-      componentConfigs += `import ${p} from '../${components[c].paths[p]}'\n`;
+      componentConfigs += `import ${p} from '${resolved}'\n`;
     }
   }
 

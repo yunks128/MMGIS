@@ -16,7 +16,7 @@ var swaggerDocumentMain = require("../docs/mmgis-openapi.json");
 const createError = require("http-errors");
 const cors = require("cors");
 const logger = require("../API/logger");
-const { rateLimit } = require("express-rate-limit");
+const { apilimiter, authLimiter, computeLimiter } = require("./rateLimiters");
 const compression = require("compression");
 
 const session = require("express-session");
@@ -64,23 +64,6 @@ const app = express();
 
 const isDocker = utils.isDocker();
 process.env.IS_DOCKER = isDocker ? "true" : "false";
-
-const apilimiter = rateLimit({
-  windowMs: 5 * 60 * 1000, // 5 minutes
-  max: 20000, // limit each IP to 100 requests per windowMs
-});
-
-const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 10,
-  message: { status: 'failure', message: 'Too many attempts, try again later.' },
-});
-
-const computeLimiter = rateLimit({
-  windowMs: 60 * 1000, // 1 minute
-  max: 30,
-  message: { status: 'failure', message: 'Rate limit exceeded.' },
-});
 
 // Load the permissions.json file, which maps LDAP groups to permission sets.
 // This application has two permission sets: "users" and "admins".
@@ -566,8 +549,6 @@ let s = {
   useSwaggerSchema,
   permissions,
   ROOT_PATH,
-  authLimiter,
-  computeLimiter,
 };
 
 // Trust first proxy
@@ -849,10 +830,29 @@ setups.getBackendSetups(function (setups) {
     //////Setups Started//////
     setups.started(s);
 
-    // error handler
+    // 404 handler
     app.all("/{*splat}", (req, res, next) => {
-      // render the error page
       res.status(404).render("error");
+    });
+
+    // Global error handler — catches errors forwarded by next(err) or thrown
+    // in async route handlers. Prevents unhandled errors from crashing the
+    // process; returns a 500 response instead.
+    app.use((err, req, res, next) => {
+      logger(
+        "error",
+        "Unhandled route error.",
+        req.originalUrl,
+        req,
+        err,
+      );
+      if (res.headersSent) {
+        return next(err);
+      }
+      res.status(500).send({
+        status: "error",
+        message: "Internal server error.",
+      });
     });
 
     logger(
