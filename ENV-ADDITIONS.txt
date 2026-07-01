@@ -1,0 +1,61 @@
+# Add these lines to your .env file to enable Aircraft and Vessels tracking
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Aircraft Tracking (OpenSky Network ADS-B)
+# ═══════════════════════════════════════════════════════════════════════════
+# Set to "true" to enable aircraft tracking (/api/aircraft/*)
+WITH_AIRCRAFT=true
+
+# OpenSky Network bounding box (Arctic Circle by default)
+# Minimum latitude (default: 66.5 - Arctic Circle)
+OPENSKY_BBOX_LAMIN=66.5
+
+# Minimum longitude (default: -180)
+OPENSKY_BBOX_LOMIN=-180
+
+# Maximum latitude (default: 90 - North Pole)
+OPENSKY_BBOX_LAMAX=90
+
+# Maximum longitude (default: 180)
+OPENSKY_BBOX_LOMAX=180
+
+# Polling interval in milliseconds (default: 30000 - 30 seconds)
+OPENSKY_POLL_INTERVAL=30000
+
+# Minutes before an aircraft position is considered stale (default: 60)
+OPENSKY_TTL_MINUTES=60
+
+# Days of aircraft track history to retain in PostgreSQL (default: 7, 0 to disable)
+AIRCRAFT_HISTORY_DAYS=7
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Vessels Tracking (AISStream.io)
+# ═══════════════════════════════════════════════════════════════════════════
+# AISStream.io API key — https://aisstream.io (FREE, instant signup)
+# REQUIRED for vessels to work. Without this, vessel feed is disabled.
+AISSTREAM_API_KEY=
+
+# Bounding box for AIS subscription in JSON format
+# Default: [[[60,-180],[90,180]]] covers Arctic shipping corridors
+AISSTREAM_BBOX=[[[60,-180],[90,180]]]
+
+# Minutes before a vessel position is considered stale (default: 60)
+AISSTREAM_TTL_MINUTES=60
+
+# Days of vessel track history to retain in PostGIS (default: 7, 0 to disable)
+VESSEL_HISTORY_DAYS=7
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# NOTES:
+# ═══════════════════════════════════════════════════════════════════════════
+# 1. Aircraft tracking works immediately (no API key needed)
+# 2. Vessels tracking requires a free API key from https://aisstream.io
+# 3. After adding these variables, restart MMGIS:
+#    - Docker: docker-compose restart mmgis
+#    - Local: npm start
+# 4. Verify in logs: look for "[Aircraft] Routes mounted" and "[Vessels] Routes mounted"
+# 5. Test endpoints:
+#    - http://localhost:8889/api/aircraft/status
+#    - http://localhost:8889/api/vessels/status
