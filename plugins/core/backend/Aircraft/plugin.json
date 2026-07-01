@@ -1,0 +1,12 @@
+{
+  "name": "Aircraft",
+  "version": "1.0.0",
+  "description": "Real-time ADS-B aircraft tracking via OpenSky Network API",
+  "author": "MMGIS Team",
+  "engines": {
+    "mmgis": ">=4.0.0"
+  },
+  "priority": 100,
+  "overridable": true,
+  "dependencies": []
+}
