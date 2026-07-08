@@ -350,6 +350,8 @@ export const constructVectorLayer = (
 
                 layerObj.style.radius = finalRad || 8
             }
+            if (layerObj.style.className == null)
+                layerObj.style.className = layerObj.uuid || ''
             if (
                 noPointerEventsClass != null &&
                 layerObj.style.className.indexOf(noPointerEventsClass) === -1

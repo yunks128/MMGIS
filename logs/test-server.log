@@ -1,0 +1,44 @@
+
+> mmgis@5.2.7-20260629 start
+> node scripts/init-db.js && node scripts/server.js
+
+ error   Failed to create mmgis-stac database: getaddrinfo ENOTFOUND db (code: ENOTFOUND)
+   Caller: connection
+   Error: SequelizeHostNotFoundError: getaddrinfo ENOTFOUND db
+    at Client._connectionCallback (/Users/kyun/Downloads/JPL/MMGIS/node_modules/sequelize/lib/dialects/postgres/connection-manager.js:134:24)
+    at Client._handleErrorWhileConnecting (/Users/kyun/Downloads/JPL/MMGIS/node_modules/pg/lib/client.js:326:19)
+    at Client._handleErrorEvent (/Users/kyun/Downloads/JPL/MMGIS/node_modules/pg/lib/client.js:336:19)
+    at Connection.emit (node:events:518:28)
+    at Socket.reportStreamError (/Users/kyun/Downloads/JPL/MMGIS/node_modules/pg/lib/connection.js:57:12)
+    at Socket.emit (node:events:518:28)
+    at emitErrorNT (node:internal/streams/destroy:169:8)
+    at emitErrorCloseNT (node:internal/streams/destroy:128:3)
+    at process.processTicksAndRejections (node:internal/process/task_queues:82:21)
+/bin/sh: pypgstac: command not found
+ warning   Failed to conform the mmgis-stac database to pgstac.
+   Caller: connection
+ error   Failed to create mmgis database: getaddrinfo ENOTFOUND db (code: ENOTFOUND)
+   Caller: connection
+   Error: SequelizeHostNotFoundError: getaddrinfo ENOTFOUND db
+    at Client._connectionCallback (/Users/kyun/Downloads/JPL/MMGIS/node_modules/sequelize/lib/dialects/postgres/connection-manager.js:134:24)
+    at Client._handleErrorWhileConnecting (/Users/kyun/Downloads/JPL/MMGIS/node_modules/pg/lib/client.js:326:19)
+    at Client._handleErrorEvent (/Users/kyun/Downloads/JPL/MMGIS/node_modules/pg/lib/client.js:336:19)
+    at Connection.emit (node:events:518:28)
+    at Socket.reportStreamError (/Users/kyun/Downloads/JPL/MMGIS/node_modules/pg/lib/connection.js:57:12)
+    at Socket.emit (node:events:518:28)
+    at emitErrorNT (node:internal/streams/destroy:169:8)
+    at emitErrorCloseNT (node:internal/streams/destroy:128:3)
+    at process.processTicksAndRejections (node:internal/process/task_queues:82:21)
+ infrastructure_error   Unable to connect to the database.
+   Caller: connection
+   Error: SequelizeHostNotFoundError: getaddrinfo ENOTFOUND db
+    at Client._connectionCallback (/Users/kyun/Downloads/JPL/MMGIS/node_modules/sequelize/lib/dialects/postgres/connection-manager.js:134:24)
+    at Client._handleErrorWhileConnecting (/Users/kyun/Downloads/JPL/MMGIS/node_modules/pg/lib/client.js:326:19)
+    at Client._handleErrorEvent (/Users/kyun/Downloads/JPL/MMGIS/node_modules/pg/lib/client.js:336:19)
+    at Connection.emit (node:events:518:28)
+    at Socket.reportStreamError (/Users/kyun/Downloads/JPL/MMGIS/node_modules/pg/lib/connection.js:57:12)
+    at Socket.emit (node:events:518:28)
+    at emitErrorNT (node:internal/streams/destroy:169:8)
+    at emitErrorCloseNT (node:internal/streams/destroy:128:3)
+    at process.processTicksAndRejections (node:internal/process/task_queues:82:21)
+ info   Failed.

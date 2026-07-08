@@ -90,6 +90,21 @@ function getBackendSetups(cb) {
     }
   }
 
+  // Explicitly load Frozon Agent plugin from API directory
+  try {
+    const agentSetup = require("./Frozon-MMGIS-Plugin-Backend/Agent/setup");
+    if (agentSetup) {
+      setups["Agent"] = agentSetup;
+      setupManifests["Agent"] = {
+        priority: 200,
+        overridable: true
+      };
+      logger("loaded", "Backend: Agent from Frozon (API/Frozon-MMGIS-Plugin-Backend/Agent)", "Setups");
+    }
+  } catch (err) {
+    logger("warn", `Frozon Agent plugin not found or failed to load: ${err.message}`, "Setups");
+  }
+
   // 3. Sort by priority from plugin.json manifest (falls back to lifecycle module for compat).
   setups = Object.keys(setups)
     .sort(function (a, b) {

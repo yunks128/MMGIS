@@ -8,5 +8,5 @@
   },
   "priority": 100,
   "overridable": true,
-  "dependencies": []
+  "dependencies": {}
 }

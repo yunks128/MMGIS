@@ -1,5 +1,5 @@
 const Sequelize = require("sequelize");
-const { sequelize } = require("../../../connection");
+const { sequelize } = require("../../../../../API/connection");
 
 /**
  * AircraftPosition: durable history of ADS-B position reports keyed by ICAO24.

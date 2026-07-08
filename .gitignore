@@ -69,3 +69,6 @@ docker-compose.env.yml
 plugin-package.json
 plugin-python-requirements.txt
 plugin-conda-deps.txt
+
+# Env backups (may contain secrets)
+.env.backup*

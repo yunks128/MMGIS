@@ -47,21 +47,35 @@ Instance type | string enum | default `production`
 
 URL of Postgres database | string | default `null`
 
+**For Docker**: Set to `db` (the service name in docker-compose.yml)  
+**For local development**: Set to `localhost`
+
 #### `DB_PORT=`
 
-Port for Postgres database | string | default `null`
+Port for Postgres database | string | default `5432`
 
 #### `DB_NAME=`
 
 Name of Postgres database | string | default `null`
 
+**For Docker**: Use `mmgis` (matches docker-compose.yml)  
+**For local development**: Use your chosen database name
+
 #### `DB_USER=`
 
 User of Postgres database | string | default `null`
 
+**For Docker**: Use `postgres` (matches docker-compose.yml)  
+**For local development**: Use your PostgreSQL username
+
 #### `DB_PASS=`
 
 Password of Postgres database | string | default `null`
+
+**For Docker**: Use `postgres` (matches docker-compose.yml)  
+**For local development**: Use your PostgreSQL password
+
+> **Note**: The Docker setup in `docker-compose.yml` uses `postgres/postgres/mmgis` as the default credentials. Make sure your `.env` file matches these values when running with Docker.
 
 ## Optional Variables
 
@@ -372,3 +386,95 @@ Custom servers will be accessible at `{ROOT_PATH}/{routeName}` where `ROOT_PATH`
 **Note:**
 
 - Includes standard authentication middleware (allows all GETs, requires admin auth for other methods)
+
+## Aircraft Tracking (OpenSky Network Plugin)
+
+#### `WITH_AIRCRAFT=`
+
+Enable real-time aircraft tracking via OpenSky Network ADS-B data | boolean | default `false`
+
+Set to `true` to activate the Aircraft plugin, which polls the OpenSky Network REST API for live aircraft positions and displays them on the map. Requires no API key (free public access with rate limits).
+
+#### `OPENSKY_BBOX_LAMIN=`
+
+Minimum latitude for OpenSky Network bounding box query | float | default `66.5` (Arctic Circle)
+
+Defines the southern boundary of the geographic area to track aircraft. Default covers the Arctic Circle and above.
+
+#### `OPENSKY_BBOX_LOMIN=`
+
+Minimum longitude for OpenSky Network bounding box query | float | default `-180`
+
+Defines the western boundary of the geographic area to track aircraft.
+
+#### `OPENSKY_BBOX_LAMAX=`
+
+Maximum latitude for OpenSky Network bounding box query | float | default `90` (North Pole)
+
+Defines the northern boundary of the geographic area to track aircraft.
+
+#### `OPENSKY_BBOX_LOMAX=`
+
+Maximum longitude for OpenSky Network bounding box query | float | default `180`
+
+Defines the eastern boundary of the geographic area to track aircraft.
+
+#### `OPENSKY_POLL_INTERVAL=`
+
+Polling interval in milliseconds | integer | default `30000` (30 seconds)
+
+How often to query the OpenSky Network API for updated aircraft positions.
+
+**Note:** OpenSky enforces a daily credit quota (about 400 credits/day anonymously; a global-sized bounding box costs 4 credits per request). Without `OPENSKY_CLIENT_ID`/`OPENSKY_CLIENT_SECRET`, the poll interval is clamped to a minimum of 900000ms (15 minutes) so the quota lasts the whole day. When the quota is exceeded, polling is automatically suspended until the time indicated by OpenSky's rate-limit response.
+
+#### `OPENSKY_CLIENT_ID=`
+
+OpenSky Network OAuth2 client id | string | optional
+
+Register an account at [opensky-network.org](https://opensky-network.org/) and create an API client to obtain OAuth2 client credentials. Authenticated access grants a much higher daily API quota (4000+ credits/day) and allows faster polling intervals.
+
+#### `OPENSKY_CLIENT_SECRET=`
+
+OpenSky Network OAuth2 client secret | string | optional
+
+The client secret paired with `OPENSKY_CLIENT_ID`.
+
+#### `OPENSKY_TTL_MINUTES=`
+
+In-memory cache TTL for aircraft positions in minutes | integer | default `60`
+
+How long to keep aircraft positions in the in-memory cache before considering them stale and removing them.
+
+#### `AIRCRAFT_HISTORY_DAYS=`
+
+Days of aircraft track history to retain in PostgreSQL | integer | default `7`
+
+Number of days of historical aircraft position data to keep in the database for track replay. Set to `0` to disable persistence entirely (in-memory only mode).
+
+**Example Configuration:**
+
+```bash
+# Enable aircraft tracking
+WITH_AIRCRAFT=true
+
+# Full Arctic Circle coverage (default)
+OPENSKY_BBOX_LAMIN=66.5
+OPENSKY_BBOX_LOMIN=-180
+OPENSKY_BBOX_LAMAX=90
+OPENSKY_BBOX_LOMAX=180
+
+# Poll every 30 seconds (default)
+OPENSKY_POLL_INTERVAL=30000
+
+# Keep positions in cache for 1 hour
+OPENSKY_TTL_MINUTES=60
+
+# Retain 7 days of track history
+AIRCRAFT_HISTORY_DAYS=7
+```
+
+**API Reference:**
+
+- OpenSky Network API Documentation: [https://opensky-network.org/apidoc/](https://opensky-network.org/apidoc/)
+- Rate Limits: 5 requests per 10 seconds (unauthenticated), 400 requests per day per IP
+- Coverage: Global ADS-B data (sparse in polar regions due to limited ground stations)

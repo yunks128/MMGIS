@@ -60,7 +60,19 @@ const setup = {
     {
       name: "OPENSKY_POLL_INTERVAL",
       description:
-        "Polling interval in milliseconds. Default 30000 (30 seconds).",
+        "Polling interval in milliseconds. Default 30000 (30 seconds). Without OPENSKY_CLIENT_ID/OPENSKY_CLIENT_SECRET this is clamped to 900000 (15 minutes) to stay within OpenSky's anonymous daily quota.",
+      required: false,
+    },
+    {
+      name: "OPENSKY_CLIENT_ID",
+      description:
+        "OAuth2 client id from an OpenSky Network account (opensky-network.org). Optional; grants a much higher API quota than anonymous access.",
+      required: false,
+    },
+    {
+      name: "OPENSKY_CLIENT_SECRET",
+      description:
+        "OAuth2 client secret paired with OPENSKY_CLIENT_ID.",
       required: false,
     },
     {
@@ -156,6 +168,8 @@ const setup = {
       logger: console,
       onPositionPersist,
       AircraftPosition: persistEnabled ? AircraftPosition : null,
+      clientId: process.env.OPENSKY_CLIENT_ID || null,
+      clientSecret: process.env.OPENSKY_CLIENT_SECRET || null,
     });
 
     s.app.locals.openskyClient = client;

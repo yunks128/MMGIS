@@ -16,6 +16,80 @@ function parseList(raw) {
     .filter(Boolean);
 }
 
+// Split a coordinate run wherever it jumps the antimeridian so trails don't
+// draw horizontal lines across the whole map
+function splitAtAntimeridian(coords) {
+  const segments = [];
+  let current = [coords[0]];
+  for (let i = 1; i < coords.length; i++) {
+    if (Math.abs(coords[i][0] - coords[i - 1][0]) > 180) {
+      if (current.length > 1) segments.push(current);
+      current = [coords[i]];
+    } else {
+      current.push(coords[i]);
+    }
+  }
+  if (current.length > 1) segments.push(current);
+  return segments;
+}
+
+/**
+ * Build one MultiLineString trail feature per vessel from recorded positions.
+ * Returned features carry per-feature `properties.style` so the frontend
+ * renders them as translucent trails without any layer-config changes.
+ */
+async function buildTrailFeatures(VesselPosition, vessels, hours) {
+  if (!VesselPosition || vessels.length === 0) return [];
+  const since = new Date(Date.now() - hours * 3600 * 1000);
+  const mmsis = vessels.map((v) => String(v.mmsi));
+
+  const rows = await VesselPosition.findAll({
+    where: { mmsi: { [Op.in]: mmsis }, tUtc: { [Op.gte]: since } },
+    order: [
+      ["mmsi", "ASC"],
+      ["tUtc", "ASC"],
+    ],
+    attributes: ["mmsi", "lon", "lat"],
+    limit: 100000,
+    raw: true,
+  });
+
+  const byMmsi = new Map();
+  for (const r of rows) {
+    const key = String(r.mmsi);
+    if (!byMmsi.has(key)) byMmsi.set(key, []);
+    byMmsi.get(key).push([r.lon, r.lat]);
+  }
+
+  const infoByMmsi = new Map(vessels.map((v) => [String(v.mmsi), v]));
+  const features = [];
+  for (const [mmsi, coords] of byMmsi) {
+    if (coords.length < 2) continue;
+    const segments = splitAtAntimeridian(coords);
+    if (segments.length === 0) continue;
+    const v = infoByMmsi.get(mmsi) || {};
+    features.push({
+      type: "Feature",
+      geometry: { type: "MultiLineString", coordinates: segments },
+      // noclick: trails shouldn't hijack clicks meant for the vessel marker
+      style: { noclick: true },
+      properties: {
+        name: v.name ? `${v.name} (${hours}h track)` : `${mmsi} (${hours}h track)`,
+        mmsi,
+        flagCountry: v.flagCountry || null,
+        _trail: true,
+        style: {
+          color: "#10b981",
+          weight: 2,
+          opacity: 0.55,
+          fillOpacity: 0,
+        },
+      },
+    });
+  }
+  return features;
+}
+
 /**
  * GET /api/vessels/live
  *
@@ -98,6 +172,28 @@ router.get("/live", async (req, res) => {
   res.set("Cache-Control", "public, max-age=15");
   const fc = toGeoJSON(vessels);
   fc._meta = { mode: "live", count: fc.features.length };
+
+  // Optional trajectory trails: ?tracks=true&trackHours=24
+  if (req.query.tracks === "true") {
+    const hours = Math.max(
+      1,
+      Math.min(168, Number(req.query.trackHours) || 24)
+    );
+    try {
+      const trails = await buildTrailFeatures(
+        req.app.locals.vesselPositionModel,
+        vessels,
+        hours
+      );
+      // Trails first so point markers draw on top of them
+      fc.features = trails.concat(fc.features);
+      fc._meta.trails = trails.length;
+      fc._meta.trackHours = hours;
+    } catch (err) {
+      console.warn("[Vessels.live] Trail build failed:", err.message);
+    }
+  }
+
   res.status(200).json(fc);
 });
 

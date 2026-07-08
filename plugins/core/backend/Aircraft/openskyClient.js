@@ -7,6 +7,13 @@
  * Similar architecture to aisstreamClient but using REST polling instead of WebSocket.
  */
 
+const OPENSKY_TOKEN_URL =
+  "https://auth.opensky-network.org/auth/realms/opensky-network/protocol/openid-connect/token";
+// Anonymous accounts get ~400 credits/day and a global-sized bbox costs 4
+// credits per request, so anything faster than ~15 minutes exhausts the
+// quota and OpenSky answers 429 for the rest of the day.
+const MIN_ANONYMOUS_POLL_MS = 15 * 60 * 1000;
+
 class OpenSkyClient {
   constructor(opts = {}) {
     this.bbox = opts.bbox || { lamin: 66.5, lomin: -180, lamax: 90, lomax: 180 };
@@ -15,6 +22,28 @@ class OpenSkyClient {
     this.logger = opts.logger || console;
     this.onPositionPersist = opts.onPositionPersist || null;
     this.AircraftPosition = opts.AircraftPosition || null;
+
+    // OAuth2 client-credentials (register at opensky-network.org for higher quota)
+    this.clientId = opts.clientId || null;
+    this.clientSecret = opts.clientSecret || null;
+    this._token = null;
+    this._tokenExpiresAt = 0;
+
+    // Rate-limit state: when OpenSky answers 429, suspend polling until
+    // the time it tells us to retry at instead of burning more requests
+    this.suspendedUntil = 0;
+
+    if (
+      (!this.clientId || !this.clientSecret) &&
+      this.pollIntervalMs < MIN_ANONYMOUS_POLL_MS
+    ) {
+      this.logger.warn(
+        `[OpenSky] No OPENSKY_CLIENT_ID/OPENSKY_CLIENT_SECRET configured; ` +
+          `clamping poll interval from ${this.pollIntervalMs}ms to ${MIN_ANONYMOUS_POLL_MS}ms ` +
+          `to stay within the anonymous daily quota`
+      );
+      this.pollIntervalMs = MIN_ANONYMOUS_POLL_MS;
+    }
 
     // In-memory cache: { icao24 -> { icao24, callsign, lat, lon, altitude, ... } }
     this.cache = new Map();
@@ -78,14 +107,68 @@ class OpenSkyClient {
   }
 
   /**
+   * Get (and cache) an OAuth2 access token via client credentials.
+   * Returns null when no credentials are configured or the request fails.
+   */
+  async _getToken() {
+    if (!this.clientId || !this.clientSecret) return null;
+    const now = Date.now();
+    if (this._token && now < this._tokenExpiresAt - 60000) return this._token;
+
+    try {
+      const response = await fetch(OPENSKY_TOKEN_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          grant_type: "client_credentials",
+          client_id: this.clientId,
+          client_secret: this.clientSecret,
+        }),
+      });
+      if (!response.ok) {
+        this.logger.warn(
+          `[OpenSky] Token request failed (HTTP ${response.status}); falling back to anonymous access`
+        );
+        return null;
+      }
+      const data = await response.json();
+      this._token = data.access_token || null;
+      this._tokenExpiresAt = now + (data.expires_in || 1800) * 1000;
+      return this._token;
+    } catch (err) {
+      this.logger.warn("[OpenSky] Token request error:", err.message);
+      return null;
+    }
+  }
+
+  /**
    * Poll OpenSky API for current aircraft positions
    */
   async _poll() {
+    if (Date.now() < this.suspendedUntil) return;
+
     const { lamin, lomin, lamax, lomax } = this.bbox;
     const url = `https://opensky-network.org/api/states/all?lamin=${lamin}&lomin=${lomin}&lamax=${lamax}&lomax=${lomax}`;
 
     try {
-      const response = await fetch(url);
+      const headers = {};
+      const token = await this._getToken();
+      if (token) headers.Authorization = `Bearer ${token}`;
+
+      const response = await fetch(url, { headers });
+      if (response.status === 429) {
+        const retryAfterSec =
+          Number(response.headers.get("x-rate-limit-retry-after-seconds")) ||
+          600;
+        this.suspendedUntil = Date.now() + retryAfterSec * 1000;
+        this.logger.warn(
+          `[OpenSky] Rate limited (429). Suspending polls for ${Math.round(
+            retryAfterSec / 60
+          )} min (until ${new Date(this.suspendedUntil).toISOString()}). ` +
+            `Configure OPENSKY_CLIENT_ID/OPENSKY_CLIENT_SECRET for a higher quota.`
+        );
+        return;
+      }
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
       }
@@ -338,6 +421,11 @@ class OpenSkyClient {
       bbox: this.bbox,
       pollIntervalMs: this.pollIntervalMs,
       ttlMs: this.ttlMs,
+      authenticated: !!(this.clientId && this.clientSecret),
+      rateLimitedUntil:
+        Date.now() < this.suspendedUntil
+          ? new Date(this.suspendedUntil).toISOString()
+          : null,
     };
   }
 }

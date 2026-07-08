@@ -1034,6 +1034,9 @@ async function makeVectorLayer(
     }
 
     return new Promise((resolve, reject) => {
+        // Set loading state when starting to fetch vector data
+        L_.setGlobalLoading(layerObj.name)
+
         if (forceGeoJSON) add(forceGeoJSON)
         else
             captureVector(
@@ -1114,6 +1117,8 @@ async function makeVectorLayer(
                             }
                         )
                         document.dispatchEvent(event)
+                        // Clear loading state on refresh failure
+                        L_.setGlobalLoaded(layerObj.name)
                         resolve()
                         return
                     }
@@ -1124,6 +1129,10 @@ async function makeVectorLayer(
                     true
                 ctx.layerRegistry.layer[layerObj.name] =
                     data == null ? null : false
+
+                // Clear loading state on error
+                L_.setGlobalLoaded(layerObj.name)
+
                 allLayersLoaded()
                 resolve()
                 return
@@ -1195,6 +1204,9 @@ async function makeVectorLayer(
             }
 
             L_._layersLoaded[L_._layersOrdered.indexOf(layerObj.name)] = true
+
+            // Clear loading state after vector layer is constructed
+            L_.setGlobalLoaded(layerObj.name)
 
             allLayersLoaded()
             resolve()

@@ -15,6 +15,102 @@ function parseList(raw) {
     .filter(Boolean);
 }
 
+// Split a coordinate run wherever it jumps the antimeridian so trails don't
+// draw horizontal lines across the whole map
+function splitAtAntimeridian(coords) {
+  const segments = [];
+  let current = [coords[0]];
+  for (let i = 1; i < coords.length; i++) {
+    if (Math.abs(coords[i][0] - coords[i - 1][0]) > 180) {
+      if (current.length > 1) segments.push(current);
+      current = [coords[i]];
+    } else {
+      current.push(coords[i]);
+    }
+  }
+  if (current.length > 1) segments.push(current);
+  return segments;
+}
+
+/**
+ * Build one MultiLineString trail feature per aircraft from recorded positions.
+ * Returned features carry per-feature `properties.style` so the frontend
+ * renders them as translucent trails without any layer-config changes.
+ */
+async function buildTrailFeatures(AircraftPosition, aircraft, hours) {
+  if (!AircraftPosition || aircraft.length === 0) return [];
+  const { Op } = require("sequelize");
+  const since = new Date(Date.now() - hours * 3600 * 1000);
+  const icaos = aircraft.map((a) => a.icao24);
+
+  const rows = await AircraftPosition.findAll({
+    where: { icao24: { [Op.in]: icaos }, last_contact: { [Op.gte]: since } },
+    order: [
+      ["icao24", "ASC"],
+      ["last_contact", "ASC"],
+    ],
+    attributes: ["icao24", "lon", "lat"],
+    limit: 100000,
+    raw: true,
+  });
+
+  const byIcao = new Map();
+  for (const r of rows) {
+    if (!byIcao.has(r.icao24)) byIcao.set(r.icao24, []);
+    byIcao.get(r.icao24).push([r.lon, r.lat]);
+  }
+
+  const infoByIcao = new Map(aircraft.map((a) => [a.icao24, a]));
+  const features = [];
+  for (const [icao24, coords] of byIcao) {
+    if (coords.length < 2) continue;
+    const segments = splitAtAntimeridian(coords);
+    if (segments.length === 0) continue;
+    const a = infoByIcao.get(icao24) || {};
+    const label = a.callsign || icao24;
+    features.push({
+      type: "Feature",
+      geometry: { type: "MultiLineString", coordinates: segments },
+      // noclick: trails shouldn't hijack clicks meant for the aircraft marker
+      style: { noclick: true },
+      properties: {
+        displayName: `${label} (${hours}h track)`,
+        icao24,
+        origin_country: a.origin_country || null,
+        _trail: true,
+        style: {
+          color: "#3b82f6",
+          weight: 2,
+          opacity: 0.55,
+          fillOpacity: 0,
+        },
+      },
+    });
+  }
+  return features;
+}
+
+// Attach trails to a FeatureCollection when ?tracks=true. `aircraft` is the
+// list whose ids the trails should cover.
+async function maybeAttachTrails(req, fc, aircraft) {
+  if (req.query.tracks !== "true") return;
+  const hours = Math.max(1, Math.min(168, Number(req.query.trackHours) || 24));
+  try {
+    const trails = await buildTrailFeatures(
+      req.app.locals.aircraftPositionModel,
+      aircraft,
+      hours
+    );
+    // Trails first so point markers draw on top of them
+    fc.features = trails.concat(fc.features);
+    fc._meta = fc._meta || {};
+    fc._meta.trails = trails.length;
+    fc._meta.trackHours = hours;
+  } catch (err) {
+    console.warn("[Aircraft.live] Trail build failed:", err.message);
+  }
+}
+
 /**
  * GET /api/aircraft/live
  *
@@ -94,9 +190,36 @@ router.get("/live", async (req, res) => {
   }
 
   const aircraft = client.getAircraft(opts);
+
+  // Live cache is empty (server restart, or OpenSky rate-limiting us):
+  // fall back to the most recent recorded positions so the layer isn't blank
+  if (aircraft.length === 0 && req.app.locals.aircraftPositionModel) {
+    try {
+      const snaps = await client.getHistoricalSnapshot(new Date(), {
+        ...opts,
+        windowMinutes: 24 * 60,
+      });
+      if (snaps.length > 0) {
+        const fc = toGeoJSON(snaps);
+        fc._meta = {
+          mode: "db-fallback",
+          reason:
+            "live cache empty; showing last recorded positions (up to 24h old)",
+          count: fc.features.length,
+        };
+        await maybeAttachTrails(req, fc, snaps);
+        res.set("Cache-Control", "public, max-age=60");
+        return res.status(200).json(fc);
+      }
+    } catch (err) {
+      console.warn("[Aircraft.live] DB fallback failed:", err.message);
+    }
+  }
+
   res.set("Cache-Control", "public, max-age=15");
   const fc = toGeoJSON(aircraft);
   fc._meta = { mode: "live", count: fc.features.length };
+  await maybeAttachTrails(req, fc, aircraft);
   res.status(200).json(fc);
 });
 

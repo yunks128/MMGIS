@@ -1,0 +1,522 @@
+{
+  "msv": {
+    "mission": "frozon_ai_forecast",
+    "site": "",
+    "masterdb": false,
+    "view": [
+      90,
+      "0",
+      2
+    ],
+    "radius": {
+      "major": 6378137,
+      "minor": 6378137
+    },
+    "mapscale": "",
+    "missionFolderName": "frozon"
+  },
+  "projection": {
+    "custom": true,
+    "epsg": "EPSG:3413",
+    "proj": "+proj=stere +lat_0=90 +lat_ts=70 +lon_0=-45 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs",
+    "globeproj": "webmercator",
+    "xmlpath": "",
+    "bounds": [
+      -4194304,
+      -4194304,
+      4194304,
+      4194304
+    ],
+    "origin": [
+      -4194304,
+      4194304
+    ],
+    "reszoomlevel": 0,
+    "resunitsperpixel": 16384
+  },
+  "look": {
+    "pagename": "MMGIS",
+    "minimalist": false,
+    "topbar": true,
+    "toolbar": true,
+    "scalebar": true,
+    "coordinates": true,
+    "zoomcontrol": true,
+    "graticule": false,
+    "miscellaneous": true,
+    "bodycolor": "",
+    "topbarcolor": "",
+    "toolbarcolor": "",
+    "mapcolor": "#000000",
+    "swap": true,
+    "copylink": true,
+    "screenshot": true,
+    "fullscreen": true,
+    "help": true,
+    "logourl": "",
+    "helpurl": ""
+  },
+  "panelSettings": {},
+  "panels": {
+    "viewer": true,
+    "map": true,
+    "globe": false
+  },
+  "time": {
+    "enabled": true,
+    "initiallyOpen": true,
+    "format": "%Y-%m-%dT%H:%M:%SZ",
+    "initialstart": "2023-01-03T00:00:00Z",
+    "initialwindowstart": "2023-01-03T00:00:00Z",
+    "initialend": "2024-12-31T23:59:59Z",
+    "initialwindowend": "2024-12-31T23:59:59Z",
+    "visible": true,
+    "startInPointMode": false,
+    "expandedByDefault": true
+  },
+  "tools": [
+    {
+      "name": "Layers",
+      "icon": "layers",
+      "js": "LayersTool"
+    },
+    {
+      "name": "Legend",
+      "icon": "format-list-bulleted-type",
+      "js": "LegendTool",
+      "separatedTool": true,
+      "on": true,
+      "variables": {
+        "displayOnStart": true,
+        "justification": "left",
+        "showHeadersInLegend": false
+      }
+    },
+    {
+      "name": "Info",
+      "icon": "information-variant",
+      "js": "InfoTool",
+      "variables": {
+        "sortAlphabetically": false
+      }
+    },
+    {
+      "on": false,
+      "name": "Draw",
+      "icon": "pencil",
+      "js": "DrawTool",
+      "variables": {
+        "defaultDrawClipping": "over",
+        "leadsCanEditFileInfo": false,
+        "hoverLengthOnLines": false,
+        "defaultPublicFilter": false,
+        "defaultYoursOnlyFilter": true,
+        "defaultOnFilter": false,
+        "mttttWithCreds": false,
+        "scienceIntent": true,
+        "dynamicExtent": {
+          "enabled": true
+        }
+      }
+    },
+    {
+      "on": false,
+      "name": "Identifier",
+      "icon": "map-marker",
+      "js": "IdentifierTool",
+      "separatedTool": true,
+      "variables": {
+        "justification": "left"
+      }
+    },
+    {
+      "on": false,
+      "name": "Analysis",
+      "icon": "chart-line",
+      "js": "AnalysisTool"
+    },
+    {
+      "on": true,
+      "name": "AgentChat",
+      "icon": "robot-outline",
+      "js": "AgentChatTool",
+      "separatedTool": true,
+      "variables": {
+        "justification": "right"
+      }
+    },
+    {
+      "on": false,
+      "name": "Animation",
+      "icon": "video",
+      "js": "AnimationTool",
+      "variables": {
+        "animationMP4": true,
+        "animationPNG": true,
+        "animationGIF": true
+      }
+    }
+  ],
+  "layers": [
+    {
+      "name": "Land Mask",
+      "uuid": "178840d4-e9a0-4a90-ae28-2fb406d4ea13",
+      "sublayers": [],
+      "type": "tile",
+      "visibility": true,
+      "sourceType": "url",
+      "url": "https://gibs-b.earthdata.nasa.gov/wmts/epsg3413/best/wmts.cgi?&layer=OSM_Land_Mask&style=default&tilematrixset=250m&Service=WMTS&Request=GetTile&Version=1.0.0&Format=image%2Fpng&TileMatrix={z}&TileCol={x}&TileRow={y}",
+      "tileformat": "wmts",
+      "controlled": false,
+      "initialOpacity": 1,
+      "minZoom": 0,
+      "maxNativeZoom": 10,
+      "maxZoom": 14,
+      "throughTileServer": false,
+      "tileMatrixSet": "WebMercatorQuad",
+      "cogResampling": "nearest",
+      "cogTransform": false,
+      "cogColormap": "viridis",
+      "demparser": "rgba",
+      "style": {
+        "brightness": 1,
+        "contrast": 1,
+        "saturation": 1,
+        "blend": "none"
+      },
+      "time": {
+        "enabled": false,
+        "type": "requery",
+        "format": "%Y-%m-%dT%H:%M:%SZ",
+        "compositeTile": false,
+        "refreshIntervalEnabled": false
+      },
+      "variables": {
+        "legendOrientation": "vertical"
+      },
+      "description": "Data Source: [GIBS](Sentinel 1 Radar Backscatter)"
+    },
+    {
+      "name": "Ice Forecast",
+      "uuid": "a1593a6e-d2fe-40b0-b26e-685061a9667f",
+      "sublayers": [
+        {
+          "name": "SFNO Prediction Daily 10 km 2022-2024",
+          "uuid": "5358b372-a0b1-4bf4-8e4f-81b7c1996756",
+          "sublayers": [],
+          "type": "tile",
+          "visibility": true,
+          "sourceType": "stac-collection",
+          "url": "forecast-7day-PRED",
+          "tileformat": "wmts",
+          "controlled": false,
+          "initialOpacity": 1,
+          "minZoom": 0,
+          "maxNativeZoom": 12,
+          "maxZoom": 25,
+          "demparser": "rgba",
+          "throughTileServer": true,
+          "tileMatrixSet": "EarthSeaIceNorthPolarGIBSOgraphic",
+          "cogResampling": "nearest",
+          "cogBands": [
+            "1"
+          ],
+          "cogBandsQuery": [
+            "1"
+          ],
+          "cogExpression": "(asset_b1*100)",
+          "cogExpressionEditable": false,
+          "cogTransform": true,
+          "cogMin": 0,
+          "cogMax": 100,
+          "cogUnits": "%",
+          "cogColormap": "cmrmap",
+          "style": {
+            "brightness": 1,
+            "contrast": 1,
+            "saturation": 1,
+            "blend": "none"
+          },
+          "time": {
+            "enabled": true,
+            "type": "requery",
+            "format": "%Y-%m-%dT%H:%M:%SZ",
+            "compositeTile": false,
+            "refreshIntervalEnabled": false
+          },
+          "legend": "",
+          "variables": {
+            "legendOrientation": "horizontal"
+          }
+        },
+        {
+          "name": "SFNO Ground Truth Daily 10 km 2022-2024",
+          "uuid": "111b5158-f940-42ab-b844-466b2bf4f90a",
+          "sublayers": [],
+          "type": "tile",
+          "visibility": false,
+          "sourceType": "stac-collection",
+          "url": "forecast-7day-GRND",
+          "tileformat": "wmts",
+          "controlled": false,
+          "initialOpacity": 1,
+          "minZoom": 0,
+          "maxNativeZoom": 12,
+          "maxZoom": 25,
+          "demparser": "rgba",
+          "throughTileServer": true,
+          "tileMatrixSet": "EarthSeaIceNorthPolarGIBSOgraphic",
+          "cogResampling": "nearest",
+          "cogBands": [
+            "1"
+          ],
+          "cogBandsQuery": [
+            "1"
+          ],
+          "cogExpression": "(asset_b1*100)",
+          "cogExpressionEditable": false,
+          "cogTransform": true,
+          "cogMin": 0,
+          "cogMax": 100,
+          "cogUnits": "%",
+          "cogColormap": "cmrmap",
+          "style": {
+            "brightness": 1,
+            "contrast": 1,
+            "saturation": 1,
+            "blend": "none"
+          },
+          "time": {
+            "enabled": true,
+            "type": "requery",
+            "format": "%Y-%m-%dT%H:%M:%SZ",
+            "compositeTile": false,
+            "refreshIntervalEnabled": false
+          },
+          "legend": "",
+          "variables": {
+            "legendOrientation": "horizontal"
+          }
+        }
+      ],
+      "type": "header",
+      "expanded": true
+    },
+    {
+      "name": "GIBS MODIS True Color",
+      "uuid": "e5ee31b1-9528-4342-a418-9c503e504b4b",
+      "sublayers": [],
+      "type": "tile",
+      "visibility": false,
+      "sourceType": "url",
+      "url": "https://gibs.earthdata.nasa.gov/wmts/epsg3413/best/MODIS_Terra_CorrectedReflectance_TrueColor/default/{time}/250m/{z}/{y}/{x}.jpeg",
+      "tileformat": "wmts",
+      "controlled": false,
+      "initialOpacity": 1,
+      "minZoom": 0,
+      "maxNativeZoom": 5,
+      "maxZoom": 14,
+      "demparser": "rgba",
+      "throughTileServer": false,
+      "tileMatrixSet": "WebMercatorQuad",
+      "cogResampling": "nearest",
+      "cogExpressionEditable": false,
+      "cogTransform": false,
+      "cogColormap": "viridis",
+      "style": {
+        "brightness": 1,
+        "contrast": 1,
+        "saturation": 1,
+        "blend": "none"
+      },
+      "time": {
+        "enabled": true,
+        "type": "requery",
+        "format": "%Y-%m-%dT%H:%M:%SZ",
+        "compositeTile": false,
+        "refreshIntervalEnabled": false
+      },
+      "variables": {
+        "legendOrientation": "horizontal"
+      }
+    },
+    {
+      "name": "GIBS Blue Marble",
+      "uuid": "2743c997-9ff0-4a02-83d7-9536dd86e373",
+      "sublayers": [],
+      "type": "tile",
+      "visibility": false,
+      "sourceType": "url",
+      "url": "https://gibs.earthdata.nasa.gov/wmts/epsg3413/best/BlueMarble_ShadedRelief_Bathymetry/default/500m/{z}/{y}/{x}.jpeg",
+      "tileformat": "wmts",
+      "controlled": false,
+      "initialOpacity": 1,
+      "minZoom": 0,
+      "maxNativeZoom": 4,
+      "maxZoom": 14,
+      "demparser": "rgba",
+      "throughTileServer": false,
+      "tileMatrixSet": "WebMercatorQuad",
+      "cogResampling": "nearest",
+      "cogExpressionEditable": false,
+      "cogTransform": false,
+      "cogColormap": "viridis",
+      "style": {
+        "brightness": 1,
+        "contrast": 1,
+        "saturation": 1,
+        "blend": "none"
+      },
+      "time": {
+        "enabled": false,
+        "type": "requery",
+        "format": "%Y-%m-%dT%H:%M:%SZ",
+        "compositeTile": false,
+        "refreshIntervalEnabled": false
+      },
+      "variables": {
+        "legendOrientation": "horizontal"
+      }
+    },
+    {
+      "name": "Vessels (Live AIS)",
+      "uuid": "d8a92391-81ad-4610-8e7b-57d9bd455658",
+      "sublayers": [],
+      "type": "vector",
+      "visibility": false,
+      "url": "/api/vessels/live?tracks=true&trackHours=24",
+      "controlled": false,
+      "initialOpacity": 1,
+      "time": {
+        "enabled": false,
+        "type": "requery",
+        "isRelative": false,
+        "current": "",
+        "start": "",
+        "end": "",
+        "startProp": "timestamp",
+        "endProp": "timestamp",
+        "timefield": "timestamp",
+        "format": "ISO 8601",
+        "compositeTile": false,
+        "refreshIntervalEnabled": true,
+        "refreshIntervalAmount": 60
+      },
+      "style": {
+        "radius": 9,
+        "fillColor": "#10b981",
+        "color": "#ffffff",
+        "weight": 1,
+        "fillOpacity": 0.85,
+        "opacity": 1,
+        "className": "vesselsliveais",
+        "shapeIcon": "ferry"
+      },
+      "variables": {
+        "search": "(mmsi name destination)",
+        "useKeyAsName": [
+          "name",
+          "flagCountry",
+          "speedKn",
+          "destination"
+        ]
+      },
+      "description": "### Live Vessel Tracking\n\nReal-time ship positions from AIS (Automatic Identification System) data.\n\n**Features:**\n- Live vessel positions updated every 60 seconds\n- Click any vessel to view detailed information and 24-hour track\n- Vessel types color-coded by category\n- Arctic shipping corridor coverage\n\n**Data Source:** [AISStream.io](https://aisstream.io/)\n\n**Note:** Requires AISSTREAM_API_KEY to be configured in .env file.",
+      "kind": "info"
+    },
+    {
+      "name": "Aircraft (Live ADS-B)",
+      "uuid": "b0b15bd2-9286-422c-8a53-0f75866b0c75",
+      "sublayers": [],
+      "type": "vector",
+      "visibility": false,
+      "url": "/api/aircraft/live?tracks=true&trackHours=24",
+      "controlled": false,
+      "initialOpacity": 1,
+      "time": {
+        "enabled": false,
+        "type": "requery",
+        "isRelative": false,
+        "current": "",
+        "start": "",
+        "end": "",
+        "startProp": "last_contact",
+        "endProp": "last_contact",
+        "timefield": "last_contact",
+        "format": "ISO 8601",
+        "compositeTile": false,
+        "refreshIntervalEnabled": true,
+        "refreshIntervalAmount": 30
+      },
+      "style": {
+        "radius": 9,
+        "fillColor": "#2563eb",
+        "color": "#ffffff",
+        "weight": 1,
+        "fillOpacity": 0.85,
+        "opacity": 1,
+        "className": "aircraftliveadsb",
+        "shapeIcon": "airplane",
+        "shapeRotationOffset": -45
+      },
+      "variables": {
+        "search": "(callsign icao24)",
+        "useKeyAsName": [
+          "displayName",
+          "origin_country",
+          "altitude",
+          "velocity"
+        ],
+        "markerAttachments": {
+          "bearing": {
+            "enabled": true,
+            "angleProp": "heading",
+            "angleUnit": "deg",
+            "useCustomShape": true,
+            "color": "#ffffff"
+          }
+        }
+      },
+      "description": "### Live Aircraft Tracking\n\nReal-time aircraft positions from OpenSky Network ADS-B data.\n\n**Features:**\n- Live aircraft positions updated every 30 seconds\n- Click any aircraft to view detailed information and 24-hour track\n- Grounded aircraft shown in gray, airborne in blue\n- Full Arctic Circle coverage (66.5\u00b0N and above)\n\n**Data Source:** [OpenSky Network](https://opensky-network.org/)\n\n**Note:** ADS-B coverage is sparse over remote Arctic regions due to limited ground stations.",
+      "kind": "info"
+    }
+  ],
+  "coordinates": {
+    "coordmain": "ll",
+    "coorden": false,
+    "coordcustomproj": true,
+    "coordsecondaryproj": false,
+    "coordll": true,
+    "coordlngoffset": 0,
+    "coordlatoffset": 0,
+    "coordcustomprojname": "EPSG 3413 GIBS",
+    "coordcustomprojnamex": "Easting",
+    "coordcustomprojnamey": "Northing",
+    "coordcustomprojnamez": "WGS84"
+  },
+  "variables": {
+    "justification": "right",
+    "pastNumber": 3,
+    "pastUnit": "day",
+    "forecastNumber": 3,
+    "forecastUnit": "day"
+  },
+  "components": [
+    {
+      "on": true,
+      "name": "OperationsClock",
+      "icon": "clock-fast",
+      "js": "OperationsClock",
+      "variables": {
+        "pastNumber": 3,
+        "pastUnit": "day",
+        "forecastNumber": 3,
+        "forecastUnit": "day",
+        "pastInterval": 7,
+        "futureInterval": 7,
+        "futureUnit": "day",
+        "useInitialStartTime": true
+      }
+    }
+  ]
+}

@@ -1,5 +1,5 @@
 const Sequelize = require("sequelize");
-const { sequelize } = require("../../../connection");
+const { sequelize } = require("../../../../../API/connection");
 
 /**
  * VesselPosition: durable history of AIS PositionReports keyed by MMSI.
