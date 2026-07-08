@@ -17,6 +17,7 @@ configure/public/toolConfigs.json
 # External/private plugin containers (everything except core + CLI files is gitignored)
 /plugins/*
 !/plugins/core/
+!/plugins/MMGIS-Plugins
 !/plugins/plugin-cli.js
 !/plugins/plugin-registries.json
 !/plugins/README.md
