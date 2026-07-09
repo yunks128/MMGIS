@@ -46,6 +46,11 @@ function SeparatedTools() {
                 const ToolController_ =
                     require('../../../ToolController_/ToolController_').default
                 const tM = ToolController_.toolModules[toolModuleName]
+
+                // Tools that render their own floating window (ownWindow)
+                // don't get a separated panel shell
+                if (tM && tM.ownWindow === true) return null
+
                 const toolWidth = tM ? tM.width || 200 : 200
 
                 const panelClasses = [
