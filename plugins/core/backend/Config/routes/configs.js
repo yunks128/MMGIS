@@ -7,13 +7,16 @@ const express = require("express");
 const router = express.Router();
 const execFile = require("child_process").execFile;
 const Sequelize = require("sequelize");
+const crypto = require("crypto");
 const { sequelize } = require("../../../../../API/connection");
 
 const logger = require("../../../../../API/logger");
 const Config = require("../models/config");
 const config_template = require("../../../../../API/templates/config_template");
 const userModel = require("../../Users/models/user");
+const Userfiles = require("../../Draw/models/userfiles").Userfiles;
 const User = userModel.User;
+const { UserDefaults } = require("../../Users/models/userdefaults");
 const missionTemplates = require("../../Utils/missionTemplates");
 
 // Sanitize user input to prevent XSS in error messages
@@ -44,7 +47,6 @@ const populateUUIDs = require("../uuids");
 const Utils = require("../../../../../API/utils.js");
 
 const websocket = require("../../../../../API/websocket.js");
-const WebSocket = require("isomorphic-ws");
 
 const fs = require("fs");
 const path = require("path");
@@ -149,6 +151,247 @@ function checkMissionPermission(req, res, next) {
     });
 }
 
+// Resolves the set of missions the current session may view under AUTH=local.
+// Resolves to null when unrestricted (all missions), otherwise an array of names.
+function viewableFromUser(user) {
+  if (!user || user.permission === "111") return null;
+  // null missions_viewing = legacy/unrestricted
+  if (user.missions_viewing == null) return null;
+
+  const viewable = new Set(user.missions_viewing);
+  if (user.permission === "110")
+    (user.missions_managing || []).forEach((m) => viewable.add(m));
+  return Array.from(viewable);
+}
+
+function resolveTokenUser(req) {
+  if (req.isLongTermToken)
+    return Promise.resolve({
+      permission: req.tokenUserPermission,
+      missions_managing: req.tokenUserMissions,
+      missions_viewing: req.tokenUserMissionsViewing,
+    });
+
+  const authorization = req.headers && req.headers.authorization;
+  if (!authorization) return Promise.resolve(null);
+
+  // Whitelisted routes skip token validation upstream; resolve the creator here
+  const token = String(authorization).replace(/Bearer:?\s+/g, "");
+  return sequelize
+    .query(
+      'SELECT lt.period, lt."createdAt", u.permission, u.missions_managing, u.missions_viewing FROM "long_term_tokens" lt JOIN "users" u ON lt.created_by_user_id = u.id WHERE lt.token=:token',
+      { replacements: { token } }
+    )
+    .then(([rows]) => {
+      const r = rows && rows[0];
+      if (
+        !r ||
+        !(
+          r.period == "never" ||
+          Date.now() - new Date(r.createdAt).getTime() < parseInt(r.period)
+        )
+      )
+        return null;
+      return {
+        permission: r.permission,
+        missions_managing: r.missions_managing,
+        missions_viewing: r.missions_viewing,
+      };
+    });
+}
+
+// Long-term tokens inherit their creator's viewing scope
+function viewableFromToken(req) {
+  return resolveTokenUser(req).then((user) =>
+    user ? viewableFromUser(user) : []
+  );
+}
+
+function getViewableMissions(req) {
+  if (process.env.AUTH !== "local") return Promise.resolve(null);
+  const permission = req.session ? req.session.permission : null;
+  const uid = req.session ? req.session.uid : null;
+  if (permission === "111") return Promise.resolve(null);
+  if (uid == null) {
+    if (req.isLongTermToken || req.headers.authorization)
+      return viewableFromToken(req);
+    // Guests (not logged in) may view nothing under AUTH=local
+    return Promise.resolve([]);
+  }
+
+  return User.findOne({
+    where: { id: uid },
+    attributes: ["permission", "missions_managing", "missions_viewing"],
+  }).then((user) => (user ? viewableFromUser(user) : []));
+}
+
+function getManagedMissions(req) {
+  if (req.session && req.session.permission === "111")
+    return Promise.resolve(null);
+
+  if (req.session && req.session.uid != null) {
+    return User.findOne({
+      where: { id: req.session.uid },
+      attributes: ["permission", "missions_managing"],
+    }).then((user) => {
+      if (!user || user.permission !== "110") return [];
+      return user.missions_managing || [];
+    });
+  }
+
+  if (req.isLongTermToken || (req.headers && req.headers.authorization)) {
+    return resolveTokenUser(req).then((user) => {
+      if (!user) return [];
+      if (user.permission === "111") return null;
+      if (user.permission !== "110") return [];
+      return user.missions_managing || [];
+    });
+  }
+
+  return Promise.resolve([]);
+}
+
+// Middleware guarding config loads by missions_viewing under AUTH=local
+function checkMissionViewingPermission(req, res, next) {
+  const mission = req.query.mission || (req.body && req.body.mission);
+  getViewableMissions(req)
+    .then((viewable) => {
+      if (viewable == null || mission == null || viewable.includes(mission)) {
+        next();
+        return;
+      }
+      res.send({
+        status: "failure",
+        message: `Unauthorized - no permission to view mission: ${sanitizeInput(
+          mission
+        )}`,
+      });
+    })
+    .catch((err) => {
+      logger(
+        "error",
+        "Failed to check mission viewing permissions.",
+        req.originalUrl,
+        req,
+        err
+      );
+      res.send({
+        status: "failure",
+        message: "Failed to verify mission viewing permissions.",
+      });
+    });
+}
+
+function requireAdminForVersion(req, res, next) {
+  if (req.query.version == null || req.query.version === "") {
+    next();
+    return;
+  }
+
+  getManagedMissions(req)
+    .then((managed) => {
+      if (managed === null || managed.includes(req.query.mission)) {
+        next();
+        return;
+      }
+      res.send({
+        status: "failure",
+        message:
+          "Unauthorized - only mission admins may request specific configuration versions.",
+      });
+    })
+    .catch((err) => {
+      logger(
+        "error",
+        "Failed to check mission permissions.",
+        req.originalUrl,
+        req,
+        err
+      );
+      res.send({
+        status: "failure",
+        message: "Failed to verify mission permissions.",
+      });
+    });
+}
+
+// Cached per-user set of viewable mission folder names (msv.missionFolderName)
+const VIEWABLE_FOLDERS_TTL = 10 * 1000;
+const viewableFoldersCache = new Map();
+let viewableFoldersGeneration = 0;
+function clearViewableFoldersCache(uid) {
+  viewableFoldersGeneration++;
+  if (uid == null) viewableFoldersCache.clear();
+  else viewableFoldersCache.delete(String(uid));
+}
+// Clears the cache again once a mission mutation's response has been sent
+function clearViewableFoldersCacheAfter(req, res, next) {
+  clearViewableFoldersCache();
+  res.on("finish", () => clearViewableFoldersCache());
+  next();
+}
+
+// Resolves to null (unrestricted) or a Set of /Missions folder names the user may read
+function getViewableMissionFolders(req) {
+  const uid = req.session ? req.session.uid : null;
+  const cached = uid != null ? viewableFoldersCache.get(String(uid)) : null;
+  if (cached && Date.now() - cached.ts < VIEWABLE_FOLDERS_TTL)
+    return Promise.resolve(cached.folders);
+
+  const generation = viewableFoldersGeneration;
+  return getViewableMissions(req).then((viewable) => {
+    if (viewable == null) return null;
+    return Config.findAll({
+      where: { mission: viewable },
+      attributes: ["mission", "config"],
+      order: [["id", "DESC"]],
+    }).then((configs) => {
+      const folders = new Set(viewable);
+      const seen = new Set();
+      (configs || []).forEach((c) => {
+        if (seen.has(c.mission)) return;
+        seen.add(c.mission);
+        const folder = c.config && c.config.msv && c.config.msv.missionFolderName;
+        if (typeof folder === "string" && folder.length > 0) folders.add(folder);
+      });
+      if (uid != null && generation === viewableFoldersGeneration)
+        viewableFoldersCache.set(String(uid), { ts: Date.now(), folders });
+      return folders;
+    });
+  });
+}
+
+// Middleware guarding /Missions/<folder>/... static files by missions_viewing
+// forbid(req, res) sends the 403 response
+function checkMissionFileViewingPermission(forbid) {
+  return function (req, res, next) {
+    if (process.env.AUTH !== "local") return next();
+    let folder = null;
+    try {
+      folder = decodeURIComponent(req.path.split("?")[0])
+        .split("/")
+        .filter((s) => s.length > 0)[0];
+    } catch (err) {
+      return res.sendStatus(404);
+    }
+    getViewableMissionFolders(req)
+      .then((folders) => {
+        if (folders == null || folder == null || folders.has(folder)) next();
+        else forbid(req, res);
+      })
+      .catch((err) => {
+        logger(
+          "error",
+          "Failed to check mission file viewing permissions.",
+          req.originalUrl,
+          req,
+          err
+        );
+        res.sendStatus(500);
+      });
+  };
+}
+
 function get(req, res, next, cb, options) {
   const qMission = (options && options.mission) || req.query.mission;
   const qFull = (options && options.full) || req.query.full;
@@ -245,9 +488,14 @@ function get(req, res, next, cb, options) {
     });
   return null;
 }
-router.get("/get", function (req, res, next) {
-  get(req, res, next);
-});
+router.get(
+  "/get",
+  checkMissionViewingPermission,
+  requireAdminForVersion,
+  function (req, res, next) {
+    get(req, res, next);
+  }
+);
 
 /**
  * Create a Reference Mission demo
@@ -718,43 +966,146 @@ function upsert(req, res, next, cb, info) {
 }
 
 if (fullAccess)
-  router.post("/upsert", checkMissionPermission, function (req, res, next) {
+  router.post("/upsert", checkMissionPermission, clearViewableFoldersCacheAfter, function (req, res, next) {
     upsert(req, res, next);
   });
 
 router.get("/missions", function (req, res, next) {
-  if (req.query.full === "true") {
-    sequelize
-      .query(
-        "SELECT DISTINCT ON (mission) mission, version, config FROM configs ORDER BY mission ASC, version DESC"
-      )
-      .then(([results]) => {
-        res.send({ status: "success", missions: results });
-        return null;
-      })
-      .catch((err) => {
-        logger("error", "Failed to find missions.", req.originalUrl, req, err);
-        res.send({ status: "failure", message: "Failed to find missions." });
-        return null;
-      });
-  } else {
-    Config.aggregate("mission", "DISTINCT", { plain: false })
-      .then((missions) => {
-        let allMissions = [];
-        for (let i = 0; i < missions.length; i++)
-          allMissions.push(missions[i].DISTINCT);
-        allMissions.sort((a, b) =>
-          a.localeCompare(b, undefined, { sensitivity: "base" })
-        );
+  const viewablePromise = getViewableMissions(req).catch((err) => {
+    logger(
+      "error",
+      "Failed to check mission viewing permissions.",
+      req.originalUrl,
+      req,
+      err
+    );
+    // Fail closed
+    return [];
+  });
+
+  Promise.all([
+    viewablePromise,
+    Config.aggregate("mission", "DISTINCT", { plain: false }),
+  ])
+    .then(([viewable, missions]) => {
+      let allMissions = [];
+      for (let i = 0; i < missions.length; i++)
+        allMissions.push(missions[i].DISTINCT);
+      if (viewable != null)
+        allMissions = allMissions.filter((m) => viewable.includes(m));
+      allMissions.sort((a, b) =>
+        a.localeCompare(b, undefined, { sensitivity: "base" })
+      );
+      if (req.query.cards !== "true") {
         res.send({ status: "success", missions: allMissions });
         return null;
-      })
-      .catch((err) => {
-        logger("error", "Failed to find missions.", req.originalUrl, req, err);
-        res.send({ status: "failure", message: "Failed to find missions." });
+      }
+      if (allMissions.length === 0) {
+        res.send({ status: "success", missions: [] });
         return null;
-      });
+      }
+      // Landing page card metadata only (latest version per mission)
+      return Config.findAll({
+        where: { mission: allMissions },
+        attributes: [
+          "mission",
+          [Sequelize.fn("MAX", Sequelize.col("version")), "version"],
+        ],
+        group: ["mission"],
+        raw: true,
+      })
+        .then((latest) =>
+          Config.findAll({
+            where: {
+              [Sequelize.Op.or]: latest.map((l) => ({
+                mission: l.mission,
+                version: l.version,
+              })),
+            },
+            attributes: ["mission", "version", "config"],
+            order: [
+              ["mission", "ASC"],
+              ["id", "DESC"],
+            ],
+          })
+        )
+        .then((rows) => {
+          const seen = new Set();
+          const cards = [];
+          for (const row of rows) {
+            if (seen.has(row.mission)) continue;
+            seen.add(row.mission);
+            const config = row.config || {};
+            const look = config.look || {};
+            cards.push({
+              mission: row.mission,
+              version: row.version,
+              look: { missionname: look.missionname, card: look.card },
+              msv: { missionFolderName: (config.msv || {}).missionFolderName },
+            });
+          }
+          res.send({ status: "success", missions: cards });
+          return null;
+        });
+    })
+    .catch((err) => {
+      logger("error", "Failed to find missions.", req.originalUrl, req, err);
+      res.send({ status: "failure", message: "Failed to find missions." });
+      return null;
+    });
+  return null;
+});
+
+router.get("/export", function (req, res, next) {
+  const requested = req.query.mission
+    ? String(req.query.mission)
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean)
+    : null;
+
+  if (
+    process.env.AUTH === "local" &&
+    (!req.session || req.session.uid == null) &&
+    !req.isLongTermToken &&
+    !(req.headers && req.headers.authorization)
+  ) {
+    res.send({ status: "failure", message: "Unauthorized - login required." });
+    return;
   }
+
+  Promise.all([
+    getViewableMissions(req),
+    Config.aggregate("mission", "DISTINCT", { plain: false }),
+  ])
+    .then(([viewable, missions]) => {
+      let targetMissions = Array.from(
+        new Set((missions || []).map((row) => row.DISTINCT))
+      );
+      if (viewable != null)
+        targetMissions = targetMissions.filter((m) => viewable.includes(m));
+      if (requested != null)
+        targetMissions = targetMissions.filter((m) => requested.includes(m));
+
+      if (targetMissions.length === 0) {
+        res.send({ status: "success", missions: [] });
+        return null;
+      }
+
+      const query =
+        'SELECT DISTINCT ON (mission) mission, version, config, "createdAt" FROM configs WHERE mission IN (:missions) ORDER BY mission ASC, version DESC';
+      return sequelize
+        .query(query, { replacements: { missions: targetMissions } })
+        .then(([rows]) => {
+          res.send({ status: "success", missions: rows });
+          return null;
+        });
+    })
+    .catch((err) => {
+      logger("error", "Failed to export missions.", req.originalUrl, req, err);
+      res.send({ status: "failure", message: "Failed to export missions." });
+      return null;
+    });
   return null;
 });
 
@@ -894,10 +1245,283 @@ if (fullAccess)
     }, { full: true, mission: req.body.existingMission });
   });
 
-if (fullAccess) router.post("/rename", function (req, res, next) {});
+// pg_advisory_xact_lock takes two 32 bit keys. Derive them from the target
+// name so concurrent renames into the same name serialize on the same lock.
+const renameLockKeys = (name) => {
+  const digest = crypto
+    .createHash("sha1")
+    .update("mission_rename:" + name)
+    .digest();
+  return [digest.readInt32BE(0), digest.readInt32BE(4)];
+};
 
 if (fullAccess)
-  router.post("/destroy", checkMissionPermission, function (req, res, next) {
+  router.post("/rename", checkMissionPermission, clearViewableFoldersCacheAfter, function (req, res, next) {
+    const missionName = req.body.mission;
+    const newName = req.body.newName;
+
+    const nameRegex = /^[A-Za-z0-9_ -]+$/;
+    if (
+      !missionName ||
+      !nameRegex.test(missionName) ||
+      !newName ||
+      !nameRegex.test(newName)
+    ) {
+      logger("error", "Invalid mission name in rename request.", req.originalUrl, req);
+      res.send({ status: "failure", message: "Invalid mission name." });
+      return;
+    }
+    // Rename must be at least as strict as /add: a name you cannot create
+    // should not be reachable by renaming into it.
+    if (
+      newName !== newName.trim() ||
+      newName.trim().length === 0 ||
+      !isNaN(newName[0])
+    ) {
+      logger("error", "Bad new mission name in rename request.", req.originalUrl, req);
+      res.send({ status: "failure", message: "Bad mission name." });
+      return;
+    }
+    if (missionName === newName) {
+      res.send({
+        status: "failure",
+        message: "New mission name must differ from the current name.",
+      });
+      return;
+    }
+    const missionsBase = path.resolve("./Missions");
+    const resolvedSrc = path.resolve("./Missions/" + missionName);
+    const resolvedDest = path.resolve("./Missions/" + newName);
+    if (
+      (!resolvedSrc.startsWith(missionsBase + path.sep) &&
+        resolvedSrc !== missionsBase) ||
+      (!resolvedDest.startsWith(missionsBase + path.sep) &&
+        resolvedDest !== missionsBase)
+    ) {
+      logger("error", "Path traversal attempt in rename request.", req.originalUrl, req);
+      res.send({ status: "failure", message: "Invalid mission name." });
+      return;
+    }
+
+    Config.findAll({ where: { mission: newName } })
+      .then((existing) => {
+        if ((existing && existing.length > 0) || fs.existsSync(resolvedDest)) {
+          res.send({
+            status: "failure",
+            message: "A mission named " + newName + " already exists.",
+          });
+          return null;
+        }
+        return Config.findAll({ where: { mission: missionName } }).then(
+          (rows) => {
+            if (!rows || rows.length === 0) {
+              res.send({
+                status: "failure",
+                message: "Mission " + missionName + " not found.",
+              });
+              return null;
+            }
+
+            // The folder name is intentionally separable from the mission name.
+            // Only follow the rename when the mission currently points at its
+            // own folder; if it points elsewhere, leave the folder alone.
+            const latest = rows.reduce((a, b) =>
+              (b.version || 0) > (a.version || 0) ? b : a
+            );
+            const latestFolder =
+              latest.config && latest.config.msv
+                ? latest.config.msv.missionFolderName
+                : undefined;
+            // The folder can only follow when it currently matches the mission
+            // name. Within that, the caller may opt out by sending followFolder
+            // false. Omitting the field keeps the previous behaviour.
+            const canFollowFolder =
+              !latestFolder ||
+              latestFolder === "" ||
+              latestFolder === missionName;
+            const followFolder =
+              canFollowFolder && req.body.followFolder !== false;
+
+            const lockKeys = renameLockKeys(newName);
+            return sequelize
+              .transaction(async (t) => {
+                // The check above is outside the transaction, so two callers
+                // can both see the name as free. A row lock cannot close that
+                // window because there are no rows to lock when the name is
+                // absent. Take a transaction scoped advisory lock on the target
+                // name instead, then re-check inside the transaction.
+                await sequelize.query(
+                  "SELECT pg_advisory_xact_lock($1, $2)",
+                  { bind: lockKeys, transaction: t }
+                );
+                const taken = await Config.findAll({
+                  where: { mission: newName },
+                  transaction: t,
+                });
+                if (taken && taken.length > 0) {
+                  const collision = new Error("mission name taken");
+                  collision.missionNameTaken = true;
+                  throw collision;
+                }
+                const configUpdates = rows.map((row) => {
+                  // Deep copy so Sequelize detects the JSON change
+                  const cfg = JSON.parse(JSON.stringify(row.config || {}));
+                  if (cfg.msv) {
+                    cfg.msv.mission = newName;
+                    if (followFolder) {
+                      cfg.msv.missionFolderName = newName;
+                    }
+                  }
+                  return row.update(
+                    { mission: newName, config: cfg },
+                    { transaction: t }
+                  );
+                });
+
+                // Per-user mission permissions are stored as mission names, so
+                // they must follow the rename or the user loses access.
+                const renameIn = (list) =>
+                  list.map((m) => (m === missionName ? newName : m));
+                const permissionUpdate = User.findAll({
+                  transaction: t,
+                }).then((users) => {
+                  const updates = [];
+                  (users || []).forEach((u) => {
+                    const fields = {};
+                    if (
+                      Array.isArray(u.missions_managing) &&
+                      u.missions_managing.includes(missionName)
+                    )
+                      fields.missions_managing = renameIn(u.missions_managing);
+                    if (
+                      Array.isArray(u.missions_viewing) &&
+                      u.missions_viewing.includes(missionName)
+                    )
+                      fields.missions_viewing = renameIn(u.missions_viewing);
+                    if (Object.keys(fields).length > 0)
+                      updates.push(u.update(fields, { transaction: t }));
+                  });
+                  return Promise.all(updates);
+                });
+                const defaultsUpdate = UserDefaults.findOne({
+                  where: { id: 1 },
+                  transaction: t,
+                }).then((d) => {
+                  if (
+                    d &&
+                    Array.isArray(d.missions_viewing) &&
+                    d.missions_viewing.includes(missionName)
+                  )
+                    return d.update(
+                      { missions_viewing: renameIn(d.missions_viewing) },
+                      { transaction: t }
+                    );
+                  return null;
+                });
+
+                // Draw files are scoped by mission name too.
+                const userfilesUpdate = Userfiles.update(
+                  { mission: newName },
+                  { where: { mission: missionName }, transaction: t }
+                );
+
+                return Promise.all([
+                  ...configUpdates,
+                  permissionUpdate,
+                  defaultsUpdate,
+                  userfilesUpdate,
+                ]);
+              })
+              .then(() => {
+                logger(
+                  "info",
+                  "Renamed Mission: " + missionName + " to " + newName,
+                  req.originalUrl,
+                  req
+                );
+
+                // Other missions may embed ../OldName/ relative paths (written
+                // by clone/relativizePaths). Those silently break, so report them.
+                return Config.findAll().then((allRows) => {
+                  const needle = "../" + missionName + "/";
+                  const warnings = [];
+                  (allRows || []).forEach((row) => {
+                    if (row.mission === newName) {
+                      return;
+                    }
+                    try {
+                      if (JSON.stringify(row.config || {}).indexOf(needle) !== -1) {
+                        if (warnings.indexOf(row.mission) === -1) {
+                          warnings.push(row.mission);
+                        }
+                      }
+                    } catch (e) {
+                      // ignore unparsable configs
+                    }
+                  });
+
+                  const respond = (message) => {
+                    const payload = { status: "success", message: message };
+                    if (warnings.length > 0) {
+                      payload.warnings = [
+                        "These missions contain relative paths to " +
+                          missionName +
+                          " that will need updating: " +
+                          warnings.join(", "),
+                      ];
+                    }
+                    res.send(payload);
+                  };
+
+                  const srcDir = "./Missions/" + missionName;
+                  const destDir = "./Missions/" + newName;
+                  if (followFolder && fs.existsSync(srcDir)) {
+                    fs.rename(srcDir, destDir, (err) => {
+                      if (err) {
+                        respond(
+                          "Successfully renamed mission to " +
+                            newName +
+                            " but couldn't rename its Missions directory."
+                        );
+                      } else {
+                        respond("Successfully renamed mission to " + newName);
+                      }
+                    });
+                  } else {
+                    respond("Successfully renamed mission to " + newName);
+                  }
+                  return null;
+                });
+              });
+          }
+        );
+      })
+      .catch((err) => {
+        if (err && err.missionNameTaken) {
+          res.send({
+            status: "failure",
+            message: "A mission named " + newName + " already exists.",
+          });
+          return null;
+        }
+        logger(
+          "error",
+          "Failed to rename mission: " + missionName,
+          req.originalUrl,
+          req,
+          err
+        );
+        res.send({
+          status: "failure",
+          message: "Failed to rename mission " + missionName + ".",
+        });
+        return null;
+      });
+    return null;
+  });
+
+if (fullAccess)
+  router.post("/destroy", checkMissionPermission, clearViewableFoldersCacheAfter, function (req, res, next) {
     const missionName = req.body.mission;
     if (!missionName || !/^[A-Za-z0-9_ -]+$/.test(missionName)) {
       logger("error", "Invalid mission name in destroy request.", req.originalUrl, req);
@@ -912,11 +1536,16 @@ if (fullAccess)
       return;
     }
 
-    Config.destroy({
-      where: {
-        mission: missionName,
-      },
-    })
+    sequelize
+      .transaction((t) =>
+        Promise.all([
+          Config.destroy({ where: { mission: missionName }, transaction: t }),
+          Userfiles.update(
+            { mission: null },
+            { where: { mission: missionName }, transaction: t }
+          ),
+        ])
+      )
       .then((mission) => {
         logger(
           "info",
@@ -1003,25 +1632,12 @@ function openWebSocket(body, response, info, forceClientUpdate) {
     return;
   }
 
-  const port = parseInt(process.env.PORT || "8888", 10);
-  const path = `${
-    process.env.HTTPS == "true" ? "wss" : "ws"
-  }://localhost:${port}${
-    process.env.WEBSOCKET_ROOT_PATH || process.env.ROOT_PATH || ""
-  }/`;
-  try {
-    const ws = new WebSocket(path);
-    ws.onopen = function () {
-      const data = {
-        info,
-        body,
-        forceClientUpdate,
-      };
-      ws.send(JSON.stringify(data));
-    };
-  } catch (err) {
-    console.log(err);
-  }
+  const data = {
+    info,
+    body,
+    forceClientUpdate,
+  };
+  websocket.websocket.broadcast(JSON.stringify(data));
 }
 
 // === Quick API Functions ===
@@ -1749,3 +2365,7 @@ router.post("/reference-mission/save-to-base", checkMissionPermission, function 
 });
 
 module.exports = router;
+module.exports.checkMissionPermission = checkMissionPermission;
+module.exports.checkMissionFileViewingPermission =
+  checkMissionFileViewingPermission;
+module.exports.clearViewableFoldersCache = clearViewableFoldersCache;

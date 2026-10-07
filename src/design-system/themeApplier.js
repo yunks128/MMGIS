@@ -99,10 +99,13 @@ function applyThemeToDOM(themeName) {
     // (SeparatedTools.module.css) using CSS custom properties.
 
     // --- Attributions ---
-    const attr = document.getElementById('mmgis-attributions')
-    if (attr) {
-        attr.style.background = a('--color-a', 0.6)
-    }
+    document.querySelectorAll('#mmgis-attributions-summary, #mmgis-attributions-panel').forEach((el) => {
+        el.style.background = a('--color-a', 0.88)
+        el.style.border = `1px solid ${t['--color-a1']}`
+    })
+    document.querySelectorAll('#mmgis-attributions, #mmgis-attributions-list a').forEach((el) => {
+        el.style.color = t['--color-f']
+    })
 
     // --- Close X buttons injected into tools ---
     document.querySelectorAll('.tool-close-x').forEach((el) => {
@@ -167,9 +170,6 @@ function applyThemeToDOM(themeName) {
     }
     document.querySelectorAll('.mmgisTimeUITimelineLabel, .mmgisTimeUITimelineTick').forEach((el) => {
         el.style.color = t['--color-a3']
-    })
-    document.querySelectorAll('#mmgisTimeUITimelineInner').forEach((el) => {
-        el.style.background = t['--color-a-5']
     })
     // TimeUI controls area
     document.querySelectorAll('#mmgisTimeUIControls').forEach((el) => {

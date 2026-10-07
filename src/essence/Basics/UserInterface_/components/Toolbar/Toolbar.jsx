@@ -1,5 +1,7 @@
-import React, { useEffect, useCallback, useState } from 'react'
+import React, { useEffect, useCallback, useState, useRef } from 'react'
 import useUIStore from '../../store/uiStore'
+import { toolConfigs } from '../../../../../pre/tools'
+import { getSeparatedMode } from '../../../ToolController_/toolControllerHelpers'
 import F_ from '../../../Formulae_/Formulae_'
 import BottomBarReact from '../BottomBar/BottomBarReact'
 import Tooltip from '../../../../../design-system/components/Tooltip/Tooltip'
@@ -320,29 +322,10 @@ function SepToolButton({ tool, isActive }) {
     const handleClick = useCallback(() => {
         const ToolController_ =
             require('../../../ToolController_/ToolController_').default
-        const toolModuleName = tool.name + 'Tool'
-        const tM = ToolController_.toolModules[toolModuleName]
+        const tM = ToolController_.toolModules[tool.name + 'Tool']
         if (!tM) return
-
-        if (tM.made === false) {
-            tM.make(`toolContentSeparated_${tool.name}`)
-            ToolController_.activeSeparatedTools.push(toolModuleName)
-            useUIStore.getState().addActiveSeparatedTool(toolModuleName)
-        } else {
-            tM.destroy()
-            ToolController_.activeSeparatedTools =
-                ToolController_.activeSeparatedTools.filter(
-                    (a) => a !== toolModuleName
-                )
-            useUIStore
-                .getState()
-                .removeActiveSeparatedTool(toolModuleName)
-        }
-        document.dispatchEvent(
-            new CustomEvent('toggleSeparatedTool', {
-                detail: { toggledToolName: tool.js, visible: tM.made },
-            })
-        )
+        if (tM.made === false) ToolController_.openTool(tool.name)
+        else ToolController_.closeTool(tool.name)
     }, [tool])
 
     const button = (
@@ -417,6 +400,84 @@ function SepToolsSection() {
     )
 }
 
+/**
+ * MobileToolDragHandle - the bottom-sheet grab handle for mobile tools.
+ * Sits just above the mobile toolbar (40px tall) so the user grabs the very
+ * top edge of the floating cluster and drags the whole sheet. Uses a
+ * delta-based drag (offset from the grab point) so its position doesn't need
+ * to match the panel's top edge, and snaps to the nearest detent on release.
+ */
+const MOBILE_TOOLBAR_HEIGHT = 40
+const MOBILE_HANDLE_HEIGHT = 17
+
+function MobileToolDragHandle({ pxIsTools, isDragging, visible }) {
+    const startRef = useRef({ y: 0, px: 0 })
+
+    const handlePointerDown = useCallback((e) => {
+        e.target.setPointerCapture(e.pointerId)
+        startRef.current = {
+            y: e.clientY,
+            px: useUIStore.getState().pxIsTools,
+        }
+
+        const handlePointerMove = (ev) => {
+            if (!useUIStore.getState().isDraggingSplitter) {
+                useUIStore.setState({ isDraggingSplitter: true })
+            }
+            document.body.style.userSelect = 'none'
+            // Dragging up (smaller clientY) grows the panel
+            const dyUp = startRef.current.y - ev.clientY
+            useUIStore.getState().setToolDragPx(startRef.current.px, dyUp)
+        }
+
+        const handlePointerUp = () => {
+            document.body.style.userSelect = ''
+            useUIStore.setState({ isDraggingSplitter: false })
+            useUIStore.getState().snapToNearestDetent()
+            document.removeEventListener('pointermove', handlePointerMove)
+            document.removeEventListener('pointerup', handlePointerUp)
+        }
+
+        document.addEventListener('pointermove', handlePointerMove)
+        document.addEventListener('pointerup', handlePointerUp)
+    }, [])
+
+    return (
+        <div
+            id="mobileToolDragHandle"
+            onPointerDown={handlePointerDown}
+            style={{
+                position: 'absolute',
+                left: 0,
+                width: '100%',
+                height: MOBILE_HANDLE_HEIGHT + 'px',
+                bottom: pxIsTools + MOBILE_TOOLBAR_HEIGHT + 'px',
+                zIndex: 2007,
+                display: visible ? 'flex' : 'none',
+                alignItems: 'center',
+                justifyContent: 'center',
+                background: 'var(--color-a)',
+                borderRadius: '8px 8px 0 0',
+                boxShadow: '0px -3px 3px 0px rgba(0, 0, 0, 0.3)',
+                cursor: 'row-resize',
+                touchAction: 'none',
+                transition: isDragging ? 'none' : 'bottom 0.3s ease-out',
+            }}
+        >
+            <div
+                style={{
+                    width: '36px',
+                    height: '5px',
+                    borderRadius: '3px',
+                    background: 'var(--color-f)',
+                    opacity: 0.5,
+                    pointerEvents: 'none',
+                }}
+            ></div>
+        </div>
+    )
+}
+
 function Toolbar({ userInterface }) {
     const isMobile = useUIStore((s) => s.isMobile)
     const topSize = useUIStore((s) => s.topSize)
@@ -426,6 +487,8 @@ function Toolbar({ userInterface }) {
     const activeToolName = useUIStore((s) => s.activeToolName)
     const toolsLoaded = useUIStore((s) => s.toolsLoaded)
     const mobileTools = useUIStore((s) => s.mobileTools)
+    const toolDetentFractions = useUIStore((s) => s.toolDetentFractions)
+    const isDragging = useUIStore((s) => s.isDraggingSplitter)
 
     const handleToolClick = useCallback((tool, index) => {
         // Delegate to ToolController_ which manages tool lifecycle.
@@ -462,11 +525,21 @@ function Toolbar({ userInterface }) {
         if (isMobile) {
             return mobileTools.length === 0 || mobileTools.includes(t.name)
         }
-        return !t.separatedTool
+        return !getSeparatedMode(toolConfigs, t.name)
     })
+
+    const showMobileDragHandle =
+        isMobile && (pxIsTools || 0) > 0 && toolDetentFractions.length > 0
 
     return (
         <>
+            {showMobileDragHandle && (
+                <MobileToolDragHandle
+                    pxIsTools={pxIsTools || 0}
+                    isDragging={isDragging}
+                    visible={toolbarVisible}
+                />
+            )}
             <div
                 id="toolbar"
                 style={isMobile ? {
@@ -477,7 +550,7 @@ function Toolbar({ userInterface }) {
                     bottom: (pxIsTools || 0) + 'px',
                     width: '100%',
                     zIndex: 2006,
-                    transition: 'bottom 0.3s ease-out',
+                    transition: isDragging ? 'none' : 'bottom 0.3s ease-out',
                     display: toolbarVisible ? 'inherit' : 'none',
                 } : {
                     width: toolbarVisible ? '40px' : '0px',

@@ -161,14 +161,17 @@ export default async function globalSetup() {
       'ALTER TABLE IF EXISTS user_files ADD COLUMN IF NOT EXISTS template json NULL',
       'ALTER TABLE IF EXISTS user_files ADD COLUMN IF NOT EXISTS publicity_type varchar(255) NULL',
       'ALTER TABLE IF EXISTS user_files ADD COLUMN IF NOT EXISTS public_editors text[] NULL',
+      'ALTER TABLE IF EXISTS user_files ADD COLUMN IF NOT EXISTS mission varchar(255) NULL',
       // Same columns on the test variant table
       'ALTER TABLE IF EXISTS user_files_tests ADD COLUMN IF NOT EXISTS template json NULL',
       'ALTER TABLE IF EXISTS user_files_tests ADD COLUMN IF NOT EXISTS publicity_type varchar(255) NULL',
       'ALTER TABLE IF EXISTS user_files_tests ADD COLUMN IF NOT EXISTS public_editors text[] NULL',
+      'ALTER TABLE IF EXISTS user_files_tests ADD COLUMN IF NOT EXISTS mission varchar(255) NULL',
       // file_histories (Draw/models/filehistories.js)
       'ALTER TABLE IF EXISTS file_histories ADD COLUMN IF NOT EXISTS author varchar(255) NULL',
       // users (Users/models/user.js)
       'ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS missions_managing TEXT[] NULL',
+      'ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS missions_viewing TEXT[] NULL',
       'ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS reset_token varchar(2048) NULL',
       'ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS reset_token_expiration BIGINT NULL',
       // geodatasets (Geodatasets/models/geodatasets.js)
@@ -462,13 +465,14 @@ function prepareAdjacentServerEnvFiles(repoRoot) {
     );
 
     // Point adjacent servers at the test STAC database
+    // (POSTGRES_DBNAME for stac/tipg, PGDATABASE for titiler-pgstac)
     contents = contents.replace(
-      /^(POSTGRES_DBNAME\s*=\s*).*$/m,
+      /^((?:POSTGRES_DBNAME|PGDATABASE)\s*=\s*).*$/m,
       `$1${TEST_STAC_DB_NAME}`,
     );
 
     writeFileSync(envFile, contents, 'utf8');
-    console.log(`[global-setup] Created ${srv.dir}/.env from .env.example (POSTGRES_DBNAME=${TEST_STAC_DB_NAME}).`);
+    console.log(`[global-setup] Created ${srv.dir}/.env from .env.example (STAC db=${TEST_STAC_DB_NAME}).`);
   }
 }
 

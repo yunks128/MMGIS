@@ -826,7 +826,8 @@ var Formulae_ = {
         // Protocol-absolute (http://, https://, //) OR root-relative (/path)
         // Root-relative URLs are absolute relative to the current host and
         // should NOT be prepended with missionPath.
-        const r = new RegExp('^(?:[a-z]+:)?//', 'i')
+        // RFC 3986 scheme (letters, digits, + - .) so s3://, gs://, etc. count
+        const r = new RegExp('^(?:[a-z][a-z0-9+.-]*:)?//', 'i')
         return r.test(url) || url.charAt(0) === '/'
     },
     csvToJSON: function (csv) {
@@ -1836,6 +1837,17 @@ var Formulae_ = {
     sanitize(str) {
         if (str == null) return ''
         return str.replace(/[<>;{}]/g, '')
+    },
+    // Text safe to put in markup. Layer names and feature properties come from
+    // whatever was uploaded, so they are not ours to trust.
+    escapeHtml(str) {
+        if (str == null) return ''
+        return String(str)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;')
     },
     doBoundingBoxesIntersect(a, b) {
         return a[1] <= b[3] && a[3] >= b[1] && a[0] <= b[2] && a[2] >= b[0]
