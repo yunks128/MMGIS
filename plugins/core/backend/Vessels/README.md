@@ -21,7 +21,7 @@ Real-time AIS ship position tracking via [AISStream.io](https://aisstream.io) We
 10. [Frontend Integration](#frontend-integration)
 11. [Historical Replay](#historical-replay)
 12. [Rich Vessel Popups](#rich-vessel-popups)
-13. [Copilot Chat Tools](#copilot-chat-tools)
+13. [Assistant Chat Tools](#assistant-chat-tools)
 14. [Development](#development)
 15. [Troubleshooting](#troubleshooting)
 16. [Key Design Decisions](#key-design-decisions)
@@ -77,7 +77,7 @@ flowchart TD
         LAYER["MMGIS Vector Layer\n'Vessels (Live AIS)'\ntype: vector\nurl: /api/vessels/live"]
         SLIDER["Time Slider\n{endtime} token\nreplaced in URL on change"]
         POPUP["Rich Click Popup\nrebindVesselPopups()\nsetInterval 2 s — idempotent"]
-        COPILOT["Copilot Chat Tools\nshow_vessels_in_area\nget_vessel_track\nvessel_ice_crossings"]
+        ASSISTANT["Assistant Chat Tools\nshow_vessels_in_area\nget_vessel_track\nvessel_ice_crossings"]
     end
 
     AIS -->|"PositionReport\nShipStaticData msgs"| WS
@@ -90,7 +90,7 @@ flowchart TD
     REST -->|"GeoJSON FeatureCollection"| LAYER
     SLIDER -->|"ISO 8601 timestamp"| LAYER
     LAYER --> POPUP
-    REST -->|"GeoJSON LineString track"| COPILOT
+    REST -->|"GeoJSON LineString track"| ASSISTANT
 ```
 
 ---
@@ -535,7 +535,7 @@ Together they provide:
 - Rich vessel popups with metadata and external links
 - Auto-draw tracks on vessel click
 - Time slider historical replay
-- AI Copilot integration
+- MMGIS Assistant integration
 
 ### GeoJSON Feature Properties
 
